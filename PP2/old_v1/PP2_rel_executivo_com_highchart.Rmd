@@ -1,0 +1,429 @@
+---
+title: "Relatório - Prova Prática 2"
+subtitle: "Análise de Séries Temporais"
+author: Allan Vieira 14/0128492
+date: "Junho de 2018"
+output:
+  html_document:
+    self_contained: false
+    df_print: paged
+    code_folding: show
+  pdf_document: default
+---
+
+<!-- incluir no cabecalho: -->
+<!-- always_allow_html: yes  -->
+<!--para quando formos passar para pdf -->
+
+<style>
+body {
+text-align: justify}
+</style>
+
+<!-- para justificar texto no markdown -->
+<!-- https://stackoverflow.com/questions/43222169/how-to-justify-the-text-to-both-sides-when-knitting-html-in-rmarkdown -->
+
+<!-- <style> -->
+<!--   .col2 { -->
+<!--     columns: 2 200px;         /* number of columns and width in pixels*/ -->
+<!--     -webkit-columns: 2 200px; /* chrome, safari */ -->
+<!--     -moz-columns: 2 200px;    /* firefox */ -->
+<!--   } -->
+<!--   .col3 { -->
+<!--     columns: 3 100px; -->
+<!--     -webkit-columns: 3 100px; -->
+<!--     -moz-columns: 3 100px; -->
+<!--   } -->
+<!-- </style> -->
+<!-- esse de cima funciona no output do RStudio, mas nao nos browsers -->
+<!-- tb em: https://stackoverflow.com/questions/31753897/2-column-section-in-r-markdown -->
+
+
+---
+
+### 1) Análise da temperatura global em dados registrados pela NASA (Agência Espacial Norte-Americana) e pela NOAA (Administração Atmosférica e Oceânica Nacional), desde 1980.
+
+---
+
+#### **Contextualização do problema:**
+
+Se $W_t$ representa a temperatura global observada no mês $t$ (média mensal, em graus Celsius) e $\mu$ denota uma temepratura média global constante, o arquivo $\verb|TempGlobal.csv|$ encontrado no Aprender contém as séries históricas dos desvios $X_t = Y_t - \mu$, registradas pela NASA (Agência Espacial Norte-Americana) e pela NOAA (Administração Atmosférica e Oceânica Nacional), desde 1980. Para a NASA, o período base para a estomativa da média $\mu$ compreende o período de 1951 a 1980. Para a NOAA, o período base refere-se ao séc. XX.
+
+---
+
+#### **item i) Identificar um processo ARIMA para essas séries temporais, justificando a escolha por meio de critérios técnicos.**
+
+**Dados brutos antes do tratamento**
+
+Após removermos a coluna de índices dos dados diretamente no Excel, temos:
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE}
+# ----- leitura e carregamento
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+temp.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/TempGlobal.csv"
+
+temp <- read_csv(temp.loc)
+
+# ----- data preparation
+# eliminando os NA's
+# e formatando Data para tibbletime
+temp2 <- temp %>%
+  na.omit() %>%
+  dplyr::mutate(Date = lubridate::ymd(Date)) %>% # usando ymd do lubridate
+  as_tbl_time(index = Date)
+  
+
+# head(matter3)
+temp2
+```
+
+
+
+Antes de identificarmos um processo ARIMA que descreva ambas as séries, é necessário assegurarmos que ambas sejam seŕies estacionárias. Por isso, proceder-se-á a uma série de verificações de ordem exploratória nos dados visando a condição de estacionariedade, para então buscarmos um modelo.
+
+Começamos pela plotagem das séries.
+
+**Gráficos das séries mensais:**
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(forecast)
+library(highcharter)
+library(ggplot2)
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728')
+
+X.NOAA_ts <- as.ts(xts::xts(temp2 %>% dplyr::select(X.NOAA), order.by=temp2$Date))
+
+X.NASA_ts <- as.ts(xts::xts(temp2 %>% dplyr::select(X.NASA), order.by=temp2$Date))
+
+temp2_ts <- cbind(X.NOAA_ts, X.NASA_ts)
+
+hchart(temp2_ts) %>%
+  hc_colors(plotly_palette[1:2]) %>%
+  hc_title(text = "Série Histórica Mensal dos Desvios de Temperatura (1880 - 2016)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+```
+
+
+
+
+**Gráficos das séries anuais:**
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, echo=FALSE}
+# ----- plots serie:
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728')
+
+
+# --- serie:
+# highcharts:
+temp_ano <- temp2 %>%
+  as_period("1 y") # haverah uma linha para cada ano
+
+X.NOAA_ts <- as.ts(xts::xts(temp_ano %>% dplyr::select(X.NOAA), order.by=temp_ano$Date))
+
+X.NASA_ts <- as.ts(xts::xts(temp_ano %>% dplyr::select(X.NASA), order.by=temp_ano$Date))
+
+temp_ano_ts <- cbind(X.NOAA_ts, X.NASA_ts)
+
+hchart(temp_ano_ts) %>%
+  hc_colors(plotly_palette[1:2]) %>%
+  hc_title(text = "Série Histórica Anual dos Desvios de Temperatura (1880 - 2016)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+  
+  
+```
+
+
+No que se refere à média, ambas as séries mensais aparentam comportamento **não-estacionário**. Seguimos com a análise das Funcções de Autocorrelação (FAC) e Autocorrelação Parcial (FACP).
+
+**Plots da FAC e FACP:**
+
+
+```{r ggacf_fun, echo=FALSE}
+# funcoes para plotar ACF e PACF nos moldes do ggplot2
+# adaptado de: https://stackoverflow.com/questions/42753017/adding-confidence-intervals-to-plotted-acf-in-ggplot2
+gg_acf <- function(ts, title="FAC", lag=1, lag.max=50){
+  ts_acf <- acf(ts, lag = lag, lag.max = lag.max, na.action = na.pass, plot=FALSE)
+
+  conf_lims <- c(-1,1)*qnorm(0.975)/sqrt(ts_acf$n.used)
+
+  ts_acf$acf %>%
+  # tibble::as_tibble() %>% dplyr::mutate(lags = 0:(n()-1)) %>%  # acf começa em zero e termina em n-1
+  tibble::as_tibble() %>% dplyr::mutate(lags = 0:(lag.max)) %>%  # acf começa em zero e termina em lag.max
+  ggplot2::ggplot(aes(x=lags, y = V1)) + ggplot2::scale_x_continuous(breaks=seq(0,lag.max,lag.max/10)) +
+  ggplot2::geom_hline(yintercept=conf_lims, lty=2, col='red', size=0.3) +
+  ggplot2::labs(y="Autocorrelations", x="Lag", title=title) +
+  ggplot2::geom_segment(aes(xend=lags, yend=0)) + theme_minimal()
+  #+ ggplot2::geom_point()
+}
+
+gg_pacf <- function(ts, title="FACP", lag=1, lag.max=50){
+  # ts = temp[,c("Date", "X.NASA")]
+  ts_pacf <- pacf(ts, lag = lag, lag.max = lag.max, na.action = na.pass, plot=FALSE)
+
+  # corrigindo no zero:
+  ts_pacf$acf <- c("0"=1, ts_pacf$acf)
+
+  conf_lims <- c(-1,1)*qnorm(0.975)/sqrt(ts_pacf$n.used)
+
+  ts_pacf$acf %>% # tb eh acf o objeto dentro do output de pacf
+  # tibble::as_tibble() %>% dplyr::mutate(lags = 1:n()) %>%  # pacf começa em 1 e termina em n
+  tibble::as_tibble() %>% magrittr::set_colnames(c("V1")) %>% # para funcionar apos a inclusao do zero
+  dplyr::mutate(lags = 0:(lag.max)) %>%  # acf começa em zero e termina em lag.max
+  ggplot2::ggplot(aes(x=lags, y = V1)) + ggplot2::scale_x_continuous(breaks=seq(0,lag.max,lag.max/10)) +
+  ggplot2::geom_hline(yintercept=conf_lims, lty=2, col='red', size=0.3) +
+  ggplot2::labs(y="Partial Autocorrelations", x="Lag", title=title) +
+  ggplot2::geom_segment(aes(xend=lags, yend=0)) + theme_minimal()
+  #+ ggplot2::geom_point()
+}
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, echo=FALSE}
+
+library(gridExtra)
+grid.arrange(gg_acf(temp[,c("X.NOAA")], title = "FAC - NOAA", lag.max=1500), gg_pacf(temp[,c("X.NOAA")], title = "FACP - NOAA", lag.max=1500), ncol=2)
+
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, echo=FALSE}
+
+library(gridExtra)
+grid.arrange(gg_acf(temp[,c("X.NASA")], title = "FAC - NASA", lag.max=1500), gg_pacf(temp[,c("X.NASA")], title = "FACP - NASA", lag.max=1500), ncol=2)
+
+
+```
+
+
+Claramente, os gráficos acima nos indicam a **não existência de estacionariedade** em ambas as séries. Nas FACP's temos um comportamento de quase passeio aleatório devido a $\rho(1) \sim 1$, o que equivale a $X(t) \sim X(t-1)$. As FAC's, por sua vez, além de $\rho(1) \sim 1$, apresentam uma queda extremamente lenta indicando memória longa nos dois casos com fortes correlações.  Chama atenção também um comportamento cíclico que parece se alternar a cada 600 *lags* - o que equivale a 50 anos. Nos primeiros 50 anos da série, temos uma sequência de correlações positivas com comportamento decrescente. A partir de 1930, aproximadamente, estas correlações passam a ser negativas e atingem seu pico 50 anos depois (por volta de 1980). Nos próximos anos que se seguem, as correlações negativas começam a diminuir em valor absoluto, indicando uma clara tendência de inversão de sinal após os próximos 50 anos.
+
+Não cabe, no caso, realizarmos uma diferenciação de *lag=600*, pois perderíamos muita informação em ambas as séries. Por isso, faremos uma diferenciação apenas de primeira ordem buscando a estacionariedade nos dados. **???**
+
+**Plots das séries após diferenciação de 1ª ordem:**
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.width=9}
+library(xts)
+tempNOAAts_diff1 <- as.ts(xts::xts(temp %>% dplyr::select(X.NOAA), order.by=temp$Date) %>%
+  diff())
+
+tempNASAts_diff1 <- as.ts(xts::xts(temp %>% dplyr::select(X.NASA), order.by=temp$Date) %>%
+  diff())
+
+temp_diff <- cbind(tempNOAAts_diff1, tempNASAts_diff1)
+
+hchart(temp_diff) %>%
+  hc_colors(plotly_palette[1:2]) %>%
+  hc_title(text = "Série Histórica Anual dos Desvios de Temperatura (1880 - 2016)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, echo=FALSE}
+
+library(gridExtra)
+# grid.arrange(gg_acf(temp_diff[,c("X.NOAA")], title = "FAC - NOAA", lag.max=1500), gg_pacf(temp_diff[,c("X.NOAA")], title = "FACP - NOAA", lag.max=1500), ncol=2)
+
+```
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, echo=FALSE}
+
+library(gridExtra)
+# grid.arrange(gg_acf(temp_diff[,c("X.NASA")], title = "FAC - NASA", lag.max=1500), gg_pacf(temp_diff[,c("X.NASA")], title = "FACP - NASA", lag.max=1500), ncol=2)
+
+```
+
+As diferenciações de primeira ordem parecem ter surtido efeito no comportamento da série. Os gráficos da série não indicam qualquer violação de estacionariedade no quesito média. Os gráficos das FAC's e FACP's apresentam $\rho(1) < 0.5$ e sem padrão sazonal ou cíclico. Eventuais *lags* com correlações superando as bandas de confiança podem ser considerados como valores espúrios devido a erro amostral ou creditados à ocorrência de erro tipo I.
+
+**FAZER UM TESTE DE DICKEY-FULEER PARA CORROBORAR**
+
+Para identificar melhor o tipo de modelo e um possível "chute" para sua ordem, refaremos os plots da FAC e FACP com um range menor de ** *lags* **.
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, echo=FALSE}
+
+library(gridExtra)
+# grid.arrange(gg_acf(temp_diff[,c("X.NOAA")], title = "FAC - NOAA", lag.max=50), gg_pacf(temp_diff[,c("X.NOAA")], title = "FACP - NOAA", lag.max=50), ncol=2)
+
+```
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, echo=FALSE}
+
+library(gridExtra)
+# grid.arrange(gg_acf(temp_diff[,c("X.NASA")], title = "FAC - NASA", lag.max=50), gg_pacf(temp_diff[,c("X.NASA")], title = "FACP - NASA", lag.max=50), ncol=2)
+
+```
+
+Tanto no caso da série NOAA quanto no caso da série NASA, observa-se um aqueda abrupta da FAC e um decaimento exponencial da FACP, o que nos leva cogitar a existência de um **Modelo de Médias Móveis**. Contudo, nosso objetivo é conseguir um modelo que apresente o melhor ajuste aos dados. Por isso, para verificar de forma mais efetiva o tipo de modelo que temos, utilizamos os procedimentos ensinados em aula, buscando um modelo que apresente os melhores resultados em termos de previsão. Olhando para as FAC's, podemos chutar uma ordem **$0 \le q \le 4$** para nosso modelo. Já ao olharmos para as FACP's, podemos adotar um chute inicial **$0 \le p \le 9$**.
+
+
+Utilizando o **Mean Absolute Percentage Error (MAPE)** de um passo a frente como critério de otimalidade e tomando como base os últimos 12 meses, temos:
+
+```{r, echo=FALSE, cache = TRUE, eval=FALSE}
+# ----------------------------------------------------------------------- 
+# Identificao da ordem do processo
+# com base no erro de previsao 1 passo a frente
+# relativo as ultimas 12 observacoes
+# ----------------------------------------------------------------------- 
+
+X.0 <- temp[,c("X.NOAA"), drop=TRUE] # extrair como vetor
+N <- nrow(temp[,c("X.NOAA")])
+
+X.0 <- temp[,c("X.NASA"), drop=TRUE]
+N <- nrow(temp[,c("X.NASA")])
+
+p.max = 9
+q.max = 4
+
+MAPE <- matrix(0, p.max+1, q.max+1)
+
+
+for (p in 0:p.max){
+  for (q in 0:q.max){
+    previsto <- NULL
+    observado <- NULL
+    for (t in 0:11){
+      X <- X.0[1:(N-12+t)]
+      n <- length(X)
+      fit  <- arima(X, order=c(p, 1, q),xreg=1:n) #Certo
+      prev <- predict(fit, n.ahead = 1, newxreg=(n+1))
+      obs  <- X.0[N-12+t+1]
+      previsto[t+1] <- prev$pred
+      observado[t+1] <- obs
+    }
+  MAPE[(p+1),(q+1)] <- 100*(mean(abs((previsto-observado)/observado)))
+  }
+}
+
+MAPE12_NOAA <- MAPE
+MAPE12_NASA <- MAPE
+
+readr::write_tsv(as.data.frame(MAPE12_NOAA), path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE12_NOAA.txt")
+
+readr::write_tsv(as.data.frame(MAPE12_NASA), path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE12_NASA.txt")
+
+```
+
+
+Temos os seguintes *grids* resultantes do algoritmo de otimização:
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+MAPE12_NOAA <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE12_NOAA.txt") %>%
+  magrittr::set_colnames(paste0("q=", 0:4)) %>%
+  as.data.frame() %>%
+  round(., 4) %>%
+  `rownames<-`(paste0("p=", 0:9))
+
+
+MAPE12_NASA <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE12_NASA.txt") %>%
+  magrittr::set_colnames(paste0("q=", 0:4)) %>%
+  as.data.frame() %>%
+  round(.,4) %>%
+  `rownames<-`(paste0("p=", 0:9))
+
+library(kableExtra)
+library(knitr)
+
+
+```
+
+
+<!-- para dividir a saida em 2 colunas com css-- eh a unica que funciona no browser!! -->
+<!-- https://stackoverflow.com/questions/31753897/2-column-section-in-r-markdown -->
+<div class = "row">
+<div class = "col-md-6">
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+MAPE12_NOAA %>%
+  dplyr::mutate(`q=1` = cell_spec(
+    `q=1`, background = ifelse(`q=1` == 8.0038, "#2CA02C", 
+                               ifelse(`q=1` < 8.09 & `q=1` != 8.0038, '#FF7F0E', "white")), 
+    color = dplyr::if_else(`q=1` < 8.09, "white", "black")), 
+    `q=2` = cell_spec(
+      `q=2` , background = ifelse(`q=2` < 8.09, '#FF7F0E', "white"), 
+                                  color = dplyr::if_else(`q=2` < 8.09, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black")) %>%
+  dplyr::select(ordem, paste0("q=", 0:4)) %>%
+  kable(format="html", escape=F, digits = 4, caption="grid NOAA") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) #%>%
+  
+```
+
+</div>
+<div class = "col-md-6">
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+MAPE12_NASA %>%
+  dplyr::mutate(`q=2` = cell_spec(
+    `q=2` , background = ifelse(`q=2` < 11.14, "#2CA02C", "white"), 
+                                  color = dplyr::if_else(`q=2` < 11.14, "white", "black")),
+    `q=1` = cell_spec(
+      `q=1` , background = ifelse(`q=1` < 11.21, '#FF7F0E', "white"), 
+                                  color = dplyr::if_else(`q=1` < 11.21, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black")) %>%
+  dplyr::select(ordem, paste0("q=", 0:4)) %>%
+  kable(format="html", escape=F, digits = 4, caption="grid NASA") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) #%>%
+  
+```
+
+
+
+
+</div>
+</div>
+
+ElEGER UNS 4 MODELOS QUE SERIAM OK EM CADA GRID, SEPARAR EM DADOS DE TREINAMENTO E DE TESTE E PLOTAR AS PREVISÕES PARA VER QUAL EH O MELHOR -- ESCOLHER O QUE FOR MELHOR E AI FAZER AS PREVISOES DOS PROXIMOS 12 MESES COM ESTE MODELO
+
+Com base nos *grids* acima, os modelos com melhores resultados estão destacados. Para a série **NOAA**, o modelo mais indicado seria um **ARIMA(3,1,1)** enquanto que para a série **NASA** seria um **ARIMA(3,1,2)**. 
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+tempNOAAts <- xts::xts(temp %>% dplyr::select(X.NOAA), order.by=temp$Date)
+
+tempNASAts <- xts::xts(temp %>% dplyr::select(X.NASA), order.by=temp$Date)
+
+fit311 <- arima(tempNOAAts, order=c(3,1,1))
+fit211 <- arima(tempNOAAts, order=c(2,1,1))
+fit411 <- arima(tempNOAAts, order=c(4,1,1))
+fit511 <- arima(tempNOAAts, order=c(5,1,1))
+fit512 <- arima(tempNOAAts, order=c(5,1,2))
+
+```
+
+
+
+---
+
+#### **item ii) Previsões (tendências) para os próximos 12 meses**
+
+
+
+
+
+
+```{r}
+# fc <- forecast(fdeaths)
+```
+
+
+
+---
+
+---
+

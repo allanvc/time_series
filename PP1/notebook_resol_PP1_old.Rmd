@@ -1,0 +1,160 @@
+---
+title: "Relatório Prova Prática 1 - Séries Temporais"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+<!-- incluir no cabecalho: -->
+<!-- always_allow_html: yes  -->
+<!--para quando formos passar para pdf -->
+
+<style>
+body {
+text-align: justify}
+</style>
+
+<!-- para justificar texto no markdown -->
+<!-- https://stackoverflow.com/questions/43222169/how-to-justify-the-text-to-both-sides-when-knitting-html-in-rmarkdown -->
+
+---
+
+### 1) Análise da concentração de partículas inaláveis finas (MP$_{2.5}$) da cidade de London, província de Ontário, Canadá, no ano de 2013
+
+---
+
+#### Contextualização do problema:
+
+O arquivo Matter2013-London.csv, obtido em www.airqualityontario.com, contém informações sobre as concentrações de partículas inaláveis finas (MP$_{2,5}$, em $\mu g/m^{3}$ ), registradas no ano de 2013 em London, cidade situada na província canadense de Ontário. Os valores são registrados a cada hora. Para determinado dia D, as variáveis $\textit{H}_{1}$ a $\textit{H}_{24}$ representam as medições feitas na primeira até a $24^{ª}$ hora do dia, respectivamente.
+
+O objetivo desta análise é fazer uma análise exploratória desta série temporal dada por:
+
+$$Y_{t} = min\{H_{j,t}\}$$
+
+
+---
+
+#### item i)
+
+
+Dados brutos antes do tratamento:
+
+```{r, warning=FALSE, message=FALSE}
+# ----- leitura e carregamento
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+matter.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/Matter2013-London.csv"
+
+matter <- read_csv(matter.loc)
+head(matter)
+```
+
+Dados após preparação:
+
+```{r}
+# ----- data preparation
+
+# passando para formato long;
+# eliminando as duas primeiras colunas;
+# eliminando os NA's e as entradas com 9999 e -999;
+# agrupando por dia e calculando o minimo
+matter2 <- matter %>%
+  dplyr::select(-(1:2)) %>% # eliminando duas primeiras colunas
+  melt(id.vars = "Date") %>% # to long
+  magrittr::set_colnames(c("Date", "hora", "MP")) %>%
+  dplyr::arrange(Date, hora) %>% # ordenar por dia/hora 
+  mutate(MP = replace(MP, MP == 9999 | MP == -999, NA)) %>% # sol: https://stackoverflow.com/questions/35610437/using-dplyr-to-conditionally-replace-values-in-a-column
+  na.omit() %>%
+  group_by(Date) %>%
+  summarise(MP = as.numeric(min(MP, na.rm=TRUE))) # a serie eh baseada no minimo do dia
+  # nao precisamos das horas
+
+
+# passando para tibble e tibbletime:
+matter3 <- matter2 %>%
+  #tibble::as_tibble() %>%
+  #na.omit() %>% # eliminando os NA's
+  mutate(Date = lubridate::ymd(Date)) %>% # usando ymd do lubridate
+  as_tbl_time(index = Date)
+
+
+
+head(matter3)
+
+```
+
+
+Gráficos da série temporal $Y_{t}$:
+
+```{r, message=FALSE, warning=FALSE, fig.width=8}
+# ----- plots serie:
+
+# --- serie:
+# ggplot:
+# matter3 %>%
+# ggplot() +
+#   geom_line(aes(x = Date, y = MP), colour="orange") +
+#   theme_minimal()+
+#   labs(title="Série diária de MP")
+
+# dygraphs
+library(dygraphs)
+library(xts)
+matter3_ts <- xts(matter3 %>% dplyr::select(MP), order.by=matter3$Date)
+# dygraph(matter3_ts, elementId='matter3') %>% dyRangeSelector()# %>% dyUnzoom()
+dygraph(matter3_ts, elementId='matter3', main="Série diária de MP" ) %>% dyRangeSelector() %>% dyUnzoom() %>%
+  dySeries("MP", color = "orange")
+
+# rCharts:
+# library(rCharts)
+# library(rjson)
+# dPlot(MP ~ Date, data = matter3, type="line")
+
+```
+
+
+Plots da ACF e PACF para analisar estacionariedade:
+
+```{r, message=FALSE, warning=FALSE, fig.width=8, fig.height=3.5}
+# ----- plots:
+par(mfrow=c(1,2))
+acf(matter3_ts)
+pacf(matter3_ts)
+
+```
+<!-- se nao deixar uma linha em branco do --- para o item xx), dah erro no pandoc -->
+
+---
+
+#### item ii)
+
+
+<!-- TEM QUE CAIR RÁPIDO NO COMEÇO, MESMO QUE DEPOIS FIQUE ALTERNANDO -->
+
+Com base no gráfico da Função de Autocorrelação (FAC ou ACF em inglês), é possível inferir que a série **é estacionária**. Há um decaimento rápido da autocorrelação nos primeiros *lags* e, mesmo com uma certa variabilidade neste padrão, a correlação parece tender rapidamente a zero conforme $h$ aumenta. Este comportamento indica a presença de estacionariedade na série. Se houvesse um decaimento lento da FAC, isto poderia indicar o efeito de uma memória de mais longo prazo nos dados. Consequentemente, teríamos a dependência persistente (entre os valores de $Y_{t}$) ao longo do tempo e a não-estacionariedade da série, o que não é o caso.
+
+Haveria, ainda, a possibilidade de empregarmos testes estatísticos para a existência de estacionariedade na série. Uma das possibilidades seria o teste de *Dick-Fuller* (mais especificamente *Augmented Dick-Fuller Test (ADF)*), o qual realizamos abaixo:
+
+```{r, warning=FALSE}
+# Augmented Dick-Fuller Test for Stationarity
+tseries::adf.test(matter3_ts, alternative="stationary")
+```
+
+Portanto, com um p-valor abaixo de $1\%$, o resultado nos permite afirmar que há evidências para se aceitar a hipótese de que a série é estacionária, considerando um nivel $\alpha$ de $5\%$ para o teste.
+
+---
+
+#### item iii)
+
+
+Com base na análise descritiva apresentada no *item i)*, o decaimento geométrico nos primeiros *lags* da FAC, associado ao decaimento abrupto da FACP sugere a assinatura de um modelo Autoregressivo $A.R.(p)$. Neste caso, para identificar a ordem deste modelo, podemos olhar para o gráfico da Função de Autocorrelação Parcial (FACP ou PACF em inglês). Este gráfico apresenta *spike* significante (ordenado) apenas para $h = 1$. Por isso, o modelo de filtro linear adequado para o processo em questão seria um Modelo Autoregressivo de Ordem Um ($A.R.(1)$):
+
+$$ Y_{t} = \mu_{0} + \rho Y_{t-1} + \epsilon_{t}$$
+
+

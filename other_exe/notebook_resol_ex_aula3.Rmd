@@ -1,0 +1,248 @@
+---
+title: "Resolução Exercícios Séries Temporais - Aula 3"
+output:
+  html_document:
+    df_print: paged
+---
+
+---
+
+### 5.2)
+
+---
+
+Leitura e carregamento:
+
+```{r, warning=FALSE, message=FALSE}
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+ph1.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/pH2012.CSV"
+ph2.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/pH2013.CSV"
+ph3.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/pH2014.CSV"
+
+ph1 <- read_csv(ph1.loc)
+ph2 <- read_csv(ph2.loc)
+ph3 <- read_csv(ph3.loc)
+
+```
+
+---
+
+#### item i)
+
+```{r}
+# juntando
+ph <- bind_rows(ph1, ph2, ph3)
+```
+
+
+```{r, results='asis'}
+# convertendo para tibble time (serie temporal)
+# library(lubridate)
+ph <- ph %>%
+  mutate(Date = mdy_hm(Date)) %>% # usando mdy_hm do lubridate
+  as_tbl_time(index = Date)
+
+# filtrando
+# nao precisa - ele quer toda a serie
+ph2 <- ph %>%
+  filter_time('start' ~ 'end')
+
+head(ph2)
+# knitr::kable(ph2, fomat = "html", caption = "Série", row.names = FALSE)
+```
+
+
+Plots:
+
+```{r}
+# visualizando os dados:
+# minutos -- sem transformar os dados para 
+ph2 %>%
+ggplot(aes(x = Date, y = Point)) +
+  geom_line(colour="navy") +
+  theme_minimal()+
+  labs(title="Série sem transformação")
+```
+
+
+Não parece haver comportamento cíclico, mas utilizar um período de minutos para a série, parece tornar o gráfico muito denso, dificultando a "leitura" do gráfico. Então, vamos transformar para uma periodicidade horária:
+
+
+```{r}
+# horario
+ph2 %>%
+  as_period("1 h") %>% # haverah uma linha para cada hora
+  ggplot(aes(x = Date, y = Point)) +
+  geom_line(colour="orange") + 
+  theme_minimal()+
+  labs(title="Série horária")
+```
+
+
+Periodicidade diária:
+```{r}
+ph2 %>%
+  as_period("1 day") %>%
+  ggplot(aes(x = Date, y = Point)) +
+  geom_line(colour="red") + 
+  labs(title="Série diária")
+```
+
+
+Periodicidade semanal:
+```{r}
+ph2 %>%
+  as_period("1 week") %>%
+  ggplot(aes(x = Date, y = Point)) +
+  geom_line(colour="green") + 
+  labs(title="Série semanal")
+```
+
+Periodicidade mensal:
+```{r}
+ph2 %>%
+  as_period("1 m") %>%
+  ggplot(aes(x = Date, y = Point)) +
+  geom_line(colour="purple") + 
+  labs(title="Série mensal")
+```
+
+---
+
+#### item ii)
+
+Obtendo estatísticas mensais:
+
+```{r}
+# ii)
+# agrupando os dados mes - obtendo estatisticas mensais  - comparando o comportamento mensal
+# sol em: https://stackoverflow.com/questions/47867310/r-decrease-frequency-of-time-series-data-by-aggregating-values-in-ohlc-series?noredirect=1&lq=1
+ph2_m_summ <- ph2 %>%
+  mutate(Date = collapse_index(Date, "1 month")) %>% # acrescentei ym() de lubridate para deixar o resto da data
+  group_by(Date) %>%
+  summarise(min = min(Point),
+            avg = mean(Point),
+            max = max(Point)
+  )
+  
+# nao existe mais time_summarise()
+ph2_m_summ
+```
+
+
+Plot:
+
+```{r}
+# plot das series de min, avg e max
+library(reshape2)
+help(melt)
+
+ph2_m_summ_long <- ph2_m_summ %>%
+  melt(id.vars = c("Date")) # Date continua nas linhas idenificando cada obs
+
+ph2_m_summ_long %>%
+  ggplot() +
+  geom_line(aes(x = Date, y = value, colour=variable)) + 
+  theme_minimal()
+```
+
+Parece haver uma componente cíclica de queda dos valores do Ph nos meses de janeiro dos anos da série.
+
+---
+
+### 5.3)
+
+---
+
+
+Leitura e carregamento:
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+NYmvc.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/MVC2009C.csv"
+
+
+NYmvc <- read_csv(NYmvc.loc)
+head(NYmvc)
+
+```
+
+---
+
+#### item i)
+
+```{r}
+# eliminando colunas desnecessarias - ficando so com a data
+# e criando uma coluna de contagem
+NYmvc2 <- NYmvc %>%
+  select(Date) %>%
+  # mutate(n = 1) %>% # servirah para somarmos o nro de acidentes no dia (nao precisa)
+  mutate(Date = mdy(Date)) %>% # usando mdy_hm do lubridate
+  as_tbl_time(index = Date) # deixando como tibbletime
+```
+
+Agrupando a série por dia:
+```{r}
+# ordenando o tibble por data
+# senao ele reclama na hora de agrupar
+NYmvc2 <- NYmvc2 %>%
+  arrange(Date)
+
+# str(NYmvc2)
+
+# agrupando por dia e contando
+NYmvc2_day_count <- NYmvc2 %>%
+  mutate(Date = collapse_index(Date, "1 day")) %>%
+  group_by(Date) %>%
+  summarise(count = n())
+# ok!
+```
+
+Plot periodicidade diária:
+
+```{r}
+NYmvc2_day_count %>%
+  ggplot(aes(x = Date, y = count)) +
+  geom_line(colour="green") + 
+  labs(title="Série diária")
+```
+
+Embora o agrupamento diário dificulte a "leitura" do gráfico, é possivel constatar a existência de uma componente cíclica em que há picos de acidentes no meio e no final de cada ano.
+
+---
+
+#### item ii)
+
+Agrupando a série por mês:
+
+```{r}
+
+# agrupando por mes e contando
+NYmvc2_month_count <- NYmvc2 %>%
+  mutate(Date = collapse_index(Date, "1 month")) %>%
+  group_by(Date) %>%
+  summarise(count = n())
+
+# ok!
+```
+
+Plot periodicidade mensal:
+
+```{r}
+NYmvc2_month_count %>%
+  ggplot(aes(x = Date, y = count)) +
+  geom_line(colour="orange") + 
+  labs(title="Série mensal")
+```

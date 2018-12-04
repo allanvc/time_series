@@ -1,0 +1,637 @@
+---
+title: "Relatório Prova Prática 1 - Séries Temporais"
+author: Allan Vieira 14/0128492
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+<!-- incluir no cabecalho: -->
+<!-- always_allow_html: yes  -->
+<!--para quando formos passar para pdf -->
+
+<style>
+body {
+text-align: justify}
+</style>
+
+<!-- para justificar texto no markdown -->
+<!-- https://stackoverflow.com/questions/43222169/how-to-justify-the-text-to-both-sides-when-knitting-html-in-rmarkdown -->
+
+<!-- <style> -->
+<!--   .col2 { -->
+<!--     columns: 2 200px;         /* number of columns and width in pixels*/ -->
+<!--     -webkit-columns: 2 200px; /* chrome, safari */ -->
+<!--     -moz-columns: 2 200px;    /* firefox */ -->
+<!--   } -->
+<!--   .col3 { -->
+<!--     columns: 3 100px; -->
+<!--     -webkit-columns: 3 100px; -->
+<!--     -moz-columns: 3 100px; -->
+<!--   } -->
+<!-- </style> -->
+<!-- esse de cima funciona no output do RStudio, mas nao nos browsers -->
+<!-- tb em: https://stackoverflow.com/questions/31753897/2-column-section-in-r-markdown -->
+
+
+---
+
+### 1) Análise da concentração de partículas inaláveis finas (MP$_{2.5}$) da cidade de London, província de Ontário, Canadá, no ano de 2013
+
+---
+
+#### Contextualização do problema:
+
+O arquivo Matter2013-London.csv, obtido em www.airqualityontario.com, contém informações sobre as concentrações de partículas inaláveis finas (MP$_{2,5}$, em $\mu g/m^{3}$ ), registradas no ano de 2013 em London, cidade situada na província canadense de Ontário. Os valores são registrados a cada hora. Para determinado dia D, as variáveis $\textit{H}_{1}$ a $\textit{H}_{24}$ representam as medições feitas na primeira até a $24^{ª}$ hora do dia, respectivamente.
+
+O objetivo é realizar uma análise exploratória desta série temporal dada por:
+
+$$Y_{t} = min\{H_{j,t}\}$$
+
+
+---
+
+#### item i)
+
+
+Dados brutos antes do tratamento:
+
+```{r, warning=FALSE, message=FALSE}
+# ----- leitura e carregamento
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+matter.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/Matter2013-London.csv"
+
+matter <- read_csv(matter.loc)
+head(matter)
+```
+
+Dados após preparação:
+
+```{r}
+# ----- data preparation
+
+# passando para formato long;
+# eliminando as duas primeiras colunas;
+# eliminando os NA's e as entradas com 9999 e -999;
+# agrupando por dia e calculando o minimo
+matter2 <- matter %>%
+  dplyr::select(-(1:2)) %>% # eliminando duas primeiras colunas
+  melt(id.vars = "Date") %>% # to long
+  magrittr::set_colnames(c("Date", "hora", "MP")) %>%
+  dplyr::arrange(Date, hora) %>% # ordenar por dia/hora 
+  mutate(MP = replace(MP, MP == 9999 | MP == -999, NA)) %>% # sol: https://stackoverflow.com/questions/35610437/using-dplyr-to-conditionally-replace-values-in-a-column
+  na.omit() %>%
+  group_by(Date) %>%
+  summarise(MP = as.numeric(min(MP, na.rm=TRUE))) # a serie eh baseada no minimo do dia
+  # nao precisamos das horas
+
+
+# passando para tibble e tibbletime:
+matter3 <- matter2 %>%
+  #tibble::as_tibble() %>%
+  #na.omit() %>% # eliminando os NA's
+  mutate(Date = lubridate::ymd(Date)) %>% # usando ymd do lubridate
+  as_tbl_time(index = Date)
+
+
+
+head(matter3)
+
+```
+
+
+Gráficos da série temporal $Y_{t}$:
+
+```{r, message=FALSE, warning=FALSE, fig.width=8}
+# ----- plots serie:
+
+# --- serie:
+# ggplot:
+# matter3 %>%
+# ggplot() +
+#   geom_line(aes(x = Date, y = MP), colour="orange") +
+#   theme_minimal()+
+#   labs(title="Série diária de MP")
+
+# dygraphs
+library(dygraphs)
+library(xts)
+matter3_ts <- xts(matter3 %>% dplyr::select(MP), order.by=matter3$Date)
+# dygraph(matter3_ts, elementId='matter3') %>% dyRangeSelector()# %>% dyUnzoom()
+dygraph(matter3_ts, elementId='matter3', main="Série diária da variável MP" ) %>% dyRangeSelector() %>% dyUnzoom() %>%
+  dySeries("MP", color = "orange", strokeWidth = 0.7)
+
+# rCharts:
+# library(rCharts)
+# library(rjson)
+# dPlot(MP ~ Date, data = matter3, type="line")
+
+```
+
+
+Plots da ACF e PACF para analisar estacionariedade:
+
+```{r}
+# --- preparando o plot:
+
+# funcoes para plotar ACF e PACF nos moldes do ggplot2
+# adaptado de: https://stackoverflow.com/questions/42753017/adding-confidence-intervals-to-plotted-acf-in-ggplot2
+gg_acf <- function(ts, title){
+  ts_acf <- acf(ts, na.action = na.pass, plot=FALSE)
+  
+  conf <- 0.95
+  conf_lims <- c(-1,1)*qnorm((1 + conf)/2)/sqrt(ts_acf$n.used)
+  
+  ts_acf$acf %>% 
+  tibble::as_tibble() %>% dplyr::mutate(lags = 0:(n()-1)) %>%  # acf começa em zero e termeina em n-1
+  ggplot2::ggplot(aes(x=lags, y = V1)) + ggplot2::scale_x_continuous(breaks=seq(0,41,4)) +
+  ggplot2::geom_hline(yintercept=conf_lims, lty=2, col='red', size=0.3) +
+  ggplot2::labs(y="Autocorrelations", x="Lag", title=title) +
+  ggplot2::geom_segment(aes(xend=lags, yend=0)) + theme_minimal()
+  #+ ggplot2::geom_point()
+}
+
+gg_pacf <- function(ts, title){
+  ts_pacf <- pacf(ts, na.action = na.pass, plot=FALSE)
+  
+  conf <- 0.95
+  conf_lims <- c(-1,1)*qnorm((1 + conf)/2)/sqrt(ts_pacf$n.used)
+  
+  ts_pacf$acf %>% # tb eh acf o objeto dentro do output de pacf
+  tibble::as_tibble() %>% dplyr::mutate(lags = 1:n()) %>%  # pacf começa em 1 e termina em n
+  ggplot2::ggplot(aes(x=lags, y = V1)) + ggplot2::scale_x_continuous(breaks=seq(0,41,4)) +
+  ggplot2::geom_hline(yintercept=conf_lims, lty=2, col='red', size=0.3) +
+  ggplot2::labs(y="Partial Autocorrelations", x="Lag", title=title) +
+  ggplot2::geom_segment(aes(xend=lags, yend=0)) + theme_minimal()
+  #+ ggplot2::geom_point()
+}
+
+```
+
+```{r, fig.width=8, fig.height=4}
+# ----- plots:
+
+# par(mfrow=c(1,2))
+# acf(matter3_ts)
+# pacf(matter3_ts)
+
+library(gridExtra)
+# grid.arrange(gg_acf(matter3_ts), gg_pacf(matter3_ts), ncol=2)
+grid.arrange(gg_acf(matter3_ts, "FAC"), gg_pacf(matter3_ts, "FACP"))
+
+```
+<!-- se nao deixar uma linha em branco do --- para o item xx), dah erro no pandoc -->
+
+---
+
+#### item ii)
+
+
+<!-- TEM QUE CAIR RÁPIDO NO COMEÇO, MESMO QUE DEPOIS FIQUE ALTERNANDO -->
+
+Com base no gráfico da Função de Autocorrelação (FAC ou ACF em inglês), é possível inferir que a série **é estacionária**. Há um decaimento rápido da autocorrelação nos primeiros *lags* e, mesmo com uma certa variabilidade neste padrão, a correlação parece tender rapidamente a zero conforme $h$ aumenta, atendendo a condição $Cov(X_{t}, X_{t+h}) = f(h)$ ($Cov(X_{t}, X_{t+h}) \ne f(t)$). Este comportamento indica a presença de estacionariedade na série. Se houvesse um decaimento lento da FAC, isto poderia indicar o efeito de uma memória de mais longo prazo nos dados. Consequentemente, teríamos a dependência persistente (entre os valores de $Y_{t}$) ao longo do tempo e a não-estacionariedade da série, o que não é o caso.
+
+Há, ainda, a possibilidade de empregarmos testes estatísticos para a existência de estacionariedade na série. Uma das alternativas seria o teste de *Dick-Fuller* (mais especificamente *Augmented Dick-Fuller Test (ADF)*), o qual realizamos abaixo:
+
+```{r, warning=FALSE}
+# Augmented Dick-Fuller Test for Stationarity
+tseries::adf.test(matter3_ts, alternative="stationary")
+```
+
+Portanto, com um p-valor abaixo de $1\%$, o resultado nos permite afirmar que há evidências para se aceitar a hipótese de que a série é estacionária, considerando um nivel $\alpha$ de $5\%$ para o teste.
+
+---
+
+#### item iii)
+
+
+Com base na análise descritiva apresentada no *item i)*, o decaimento geométrico (ou exponencial ???) nos primeiros *lags* da FAC, associado ao decaimento abrupto da FACP sugere a assinatura de um modelo Autoregressivo $A.R.(p)$. Neste caso, para identificar a ordem deste modelo, podemos olhar para o gráfico da Função de Autocorrelação Parcial (FACP ou PACF em inglês). Este gráfico apresenta *spike* significante (ordenado) apenas para $h = 1$. Por isso, o modelo de filtro linear adequado para o processo em questão seria um Modelo Autoregressivo de Ordem Um ($A.R.(1)$):
+
+$$ Y_{t} = \mu_{0} + \rho Y_{t-1} + \epsilon_{t}$$
+
+---
+
+---
+
+### 2) Análise de dados de Potencial Hidrogeniônico (p**H**) coletados pelo Departamento de Recursos Hídricos do estado da Califórnia - EUA
+
+---
+
+
+#### **Contextualização do problema:**
+
+O potencial Hidrogeniônico (p**H**) é uma variável importante no monitoramento da qualidade da água, uma vez que ele afeta o metabolismo de várias espécies aquáticas. De um modo geral, para a proteção da vida aquática, o p**H** deve estar entre 6 e 9. Tomou-se o conjunto de dados *Potencial Hidrogeniônico (p**H**)*, obtido junto ao Departamento de Recursos Hídricos do Estado da California, EUA. A série histórica é constituída por 72.570 observações registradas a cada 15 minutos, de 9/mar/2012 a 9/jun/2014.
+
+O objetivo é realizar uma análise exploratória desta série temporal dada por $X_{t}$ no *intraday*.
+
+
+---
+
+#### **item i)**
+
+Dados brutos antes do tratamento:
+
+```{r, warning=FALSE, message=FALSE}
+# ----- leitura e carregamento
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+ph2012.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/pH2012.CSV"
+ph2013.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/pH2013.CSV"
+ph2014.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/pH2014.CSV"
+
+ph2012 <- read_csv(ph2012.loc)
+ph2013 <- read_csv(ph2013.loc)
+ph2014 <- read_csv(ph2014.loc)
+
+# juntando
+ph <- bind_rows(ph2012, ph2013, ph2014)
+
+head(ph)
+```
+
+
+Dados após tratamento:
+
+```{r}
+# ----- data preparation
+
+# convertendo para tibble time (serie temporal)
+# library(lubridate)
+ph2 <- ph %>%
+  dplyr::select(-Qual) %>%
+  mutate(Date = lubridate::mdy_hm(Date)) %>% # usando mdy_hm do lubridate
+  as_tbl_time(index = Date)
+
+# filtrando
+# # nao precisa - vamos usar toda a serie
+# ph2 <- ph %>%
+#   filter_time('start' ~ 'end')
+
+head(ph2)
+```
+
+
+Plot da série temporal $X_{t}$:
+
+```{r, message=FALSE, warning=FALSE, fig.width=8}
+# ----- plots serie:
+
+# --- serie intraday 15 min:
+# ph2 %>%
+# ggplot(aes(x = Date, y = Point, colour="coral2")) +
+#   geom_line() +
+#   theme_minimal()+
+#   labs(title="Série intraday (15 minutos) da variável Point")
+
+# dygraphs
+library(dygraphs)
+library(xts)
+ph2_ts <- xts(ph2 %>% dplyr::select(Point), order.by=ph2$Date)
+
+dygraph(ph2_ts, elementId='ph2', main="Série intraday (15 minutos) da variável Point" ) %>% dyRangeSelector() %>% dyUnzoom() %>%
+  dySeries("Point", color = "blue", strokeWidth = 0.5)
+
+# rCharts:
+# library(rCharts)
+# library(rjson)
+# dPlot(MP ~ Date, data = matter3, type="line")
+
+```
+
+Plots da ACF e PACF para analisar estacionariedade:
+
+```{r, fig.width=8, fig.height=7}
+# ----- plots:
+
+# par(mfrow=c(1,2))
+# acf(ph2_ts)
+# pacf(ph2_ts)
+
+library(gridExtra)
+grid.arrange(gg_acf(ph2_ts, "FAC"), gg_pacf(ph2_ts, "FACP"))
+
+```
+<!-- se nao deixar uma linha em branco do --- para o item xx), dah erro no pandoc -->
+
+---
+
+#### **item ii)**
+
+O gráfico da Função de Autocorrelação (FAC/ACF) claramente nos indica a **inexistência de estacionariedade** na série. Há um decaimento bastante lento das Correlações conforme se avança no tempo, indicando uma certa trajetória dependente do tempo. Esta memória persistente na série faz com que a condição $Cov(X_{t}, X_{t+h}) \ne f(t)$ não seja atendida. Portanto, tudo indica que a série não seja estacionária e que tenhamos que fazer uma transformação para trabalhar com estes dados.
+
+A fim de confirmar a não-estacionariedade, optou-se por realizar também o teste de Dick-Fuller (*Augmented Dick-Fuller*):
+
+
+```{r, warning=FALSE}
+# Augmented Dick-Fuller Test for Stationarity
+tseries::adf.test(ph2_ts, alternative="stationary")
+```
+
+
+**???? DEU ESTACIONÁRIA NO DICK-FULLER, mas nao no ACF!!! E AGORA ?????**
+
+Há algumas técnicas que podemos utilizar para transformar uma série não-estacionária em estacionária. Shumway & Stoffer (2011, pp. 45-47) enumeram: *detrending* por meio da remoção de uma posível tendência na série temporal; *differenciating* que consiste em fazer subtrações sucessivas da série sobre ela mesma em um ou mais períodos anteriores; e transformações como $log(x_{t})$ e Box-Cox. Os próprios autores indicam que, se objetivo é obter a estacionariedade, a opção mais adequada é diferenciar a série. O mesmo propõe Moretin (2005, pp. 4-5), acrescentando ainda, que na maioria das vezes são necessárias apenas uma ou duas diferenças para tornar a série estacionária. Portanto, com o objetivo de transformar a série em análise em uma série estacionária, empregaremos a diferenciação de primeira ordem.
+
+Dados após primeira diferenciação:
+```{r, warning=FALSE, fig.width=8}
+# ph2_diff <- ph2 %>%
+#   mutate(Point = diff(Point ~ Date[-1]))
+# 
+# ph2_diff <- ph2 %>%
+#   mutate(Point = diff(Point))
+
+ph2_ts_diff <- diff(ph2_ts)
+# str(ph2_ts_diff)
+
+head(ph2_ts_diff)
+```
+
+Plot da série após primeira diferenciação:
+```{r, warning=FALSE, fig.width=8}
+dygraph(ph2_ts_diff, elementId='ph2_diff', main="Série diferenciada da variável Point" ) %>% dyRangeSelector() %>% dyUnzoom() %>%
+  dySeries("Point", color = "blue", strokeWidth = 0.3)
+
+```
+\s\s  
+
+<!-- dois espacos forçam pular linha -->
+
+Pelo padrão de comportamento do gráfico, é possível inferir que a série passou a apresentar estacionariedade. No entanto, faremos os plots da FAC e FACP a fim de confirmar este resultado.
+
+
+Plots da ACF e PACF para analisar estacionariedade:
+
+```{r, fig.width=8, fig.height=7}
+
+grid.arrange(gg_acf(ph2_ts_diff, "FAC"), gg_pacf(ph2_ts_diff, "FACP"))
+
+```
+
+
+Com a queda abrupta da Função de Autocorrelação após o *lag* 1, temos um forte indicativo de estacionariedade na série, o que é reforçado após o segundo *lag*, quando a FAC praticamente tende a zero indicando a que a $Cov(X_{t}, X_{t+h}) = f(h)$ e não função do tempo.
+
+
+---
+
+#### **item iii)**
+
+
+Com base no gráfico da série diferenciada, é possível dizer que existe um comportamento mais sazonal e não cíclico: há um sensível aumento de volatilidade entre os meses de julho e outubro de cada ano, bem como uma sensível redução da volatilidade nos períodos de transição entre o final e início de cada ano. Não haveria, portanto, um comportamento cíclico, mas sim, sazonal dentro de cada ano.
+
+
+---
+
+#### **item iv)**
+
+
+A queda abrupta da FAC e uma FACP apresentando uma queda mais suavizada seguida de uma alternância cíclica nos leva a indicar o modelo de Médias Móveis ($M.A.(p)$) como modelo mais adequado à série. Com relação a ordem *p* do modelo de Médias Móveis, o gráfico da FAC nos mostra que os quatro primeiros *lags* depois do *lag* zero são significantes, o que nos leva a sugerir a adoção de um modelo de ordem 4 ($M.A.(4)$):
+
+$$X_{t} = \mu_{0} + \phi_{1}\epsilon_{t-1} + \phi_{2}\epsilon_{t-2} + \phi_{3}\epsilon_{t-3} + \phi_{4}\epsilon_{t-4} + \epsilon_{t}$$
+
+
+---
+
+---
+
+### 3) Análise de dados do índice Dow Jones Industrial da bolsa de valores de Nova Iorque
+
+---
+
+
+#### **Contextualização do problema:**
+
+
+Os dados referem-se ao índice Dow Jones Industrial da Bolsa de Valores de Nova Iorque, de 18/9/2009 a 25/05/2010, dispostos numa periodicidade *intraday* de 1 minuto. As colunas do arquivo de dados, além das datas e dos horários, representam, respectivamente, abertura, máxima, mínima, fechamento e volume.
+
+
+---
+
+#### **item i)**
+
+Dados brutos antes do tratamento:
+
+```{r, warning=FALSE, message=FALSE}
+# ----- leitura e carregamento
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+DJI.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/aulas/dados/DJI1MIN.txt"
+
+help(read_table)
+DJI <- read_table2(DJI.loc, col_names = FALSE)
+
+head(DJI)
+```
+
+
+Dados após preparação:
+
+```{r}
+# ----- data preparation
+
+DJI2 <- DJI %>%
+  dplyr::select(-1) %>% # eliminando primeira coluna
+  magrittr::set_colnames(c("Date", "hora", "open", "max", "min", "close", "vol")) %>%
+  #dplyr::arrange(Date, hora) %>% # ordenar por dia/hora 
+  na.omit() %>%# removendo os NA's
+  dplyr::mutate(Date = paste(Date, hora, sep = " ")) %>% # colando hora na coluna Date
+  dplyr::select(- hora) # eliminado a coluna da hora
+
+
+# passando para tibble e tibbletime:
+DJI3 <- DJI2 %>%
+  #tibble::as_tibble() %>%
+  #na.omit() %>% # eliminando os NA's
+  mutate(Date = lubridate::dmy_hms(Date)) %>% # usando ymd do lubridate
+  as_tbl_time(index = Date)
+
+
+
+head(DJI3)
+
+```
+
+
+Plots das séries DJI:
+
+```{r, message=FALSE, warning=FALSE}
+# ----- plots serie:
+
+# passando para o formato long:
+# library(reshape2)
+# library(ggplot2)
+
+
+# DJI3 %>%
+#   melt(id.vars = c("Date")) %>%
+#   ggplot(aes(x = Date, y = value, colour= variable)) +
+#   geom_line(alpha=0.5) +
+#   facet_wrap(~variable, ncol=2, scale = "free_y")+
+#   # Aesthetics
+#   labs(title = "Séries Dow Jones Industrial", x = "",
+#        subtitle = "18-09-2009 a 20-05-2010",
+#        caption = "Análise de Séries Temporais - UnB 1S2018") +
+#   #tidyquant::scale_color_tq() +
+#   #theme_tq() +
+#   theme_minimal()+
+#   theme(legend.position="none")
+#   # labs(title="Série intraday (15 minutos) da variável Point")
+
+```
+
+
+
+
+```{r}
+# ----- plots serie:
+
+
+# dygraphs
+library(dygraphs)
+library(xts)
+
+
+# volume eh mto alto e acaba dominando a serie, por isso, precisa ser separado
+DJI3_ts <- xts(DJI3 %>% dplyr::select(open, max, min, close, vol), order.by=DJI3$Date)
+
+
+# separando as series
+series <- c("open_ts", "max_ts", "min_ts", "close_ts", "vol_ts")
+for(j in 1:5){
+  assign(series[j], DJI3_ts[,j])
+}
+
+# 1 plot dygraphs para cada serie
+p1 <- dygraphs::dygraph(open_ts, group="DJI", main="Abertura") %>% dySeries("open", strokeWidth = 0.5, color="orange")
+p2 <- dygraphs::dygraph(max_ts, group="DJI", main="Máxima") %>% dySeries("max", strokeWidth = 0.5, color="red")
+p3 <- dygraphs::dygraph(min_ts, group="DJI", main="Mínima") %>% dySeries("min", strokeWidth = 1, color="lightgreen")
+p4 <- dygraphs::dygraph(close_ts, group="DJI", main="Fechamento") %>% dySeries("close", strokeWidth = 0.5, color="blue")
+p5 <- dygraphs::dygraph(vol_ts, group="DJI", main="Volume") %>% dySeries("vol", strokeWidth = 0.5, color="purple")
+
+```
+
+<!-- para dividir a saida em 2 colunas com css-- eh a unica que funciona no browser!! -->
+<!-- https://stackoverflow.com/questions/31753897/2-column-section-in-r-markdown -->
+<div class = "row">
+<div class = "col-md-6">
+```{r,  warning = FALSE, fig.height=3, fig.width=4.5}
+p1
+p3
+```
+
+
+</div>
+<div class = "col-md-6">
+```{r, warning = FALSE, fig.height=3, fig.width=4.5}
+p2
+p4
+```
+</div>
+</div>
+
+```{r, warning = FALSE, fig.height=3, fig.width=8, fig.align='center'}
+p5
+```
+
+
+Plots das FAC e FACP:
+
+<div class = "row">
+<div class = "col-md-6">
+```{r,  warning = FALSE, fig.height=3, fig.width=4.5}
+grid.arrange(gg_acf(open_ts, "FAC abertura"), gg_pacf(open_ts,"FACP abertura"))
+grid.arrange(gg_acf(min_ts, "FAC mínima"), gg_pacf(min_ts, "FACP mínima"))
+```
+
+
+</div>
+<div class = "col-md-6">
+```{r, warning = FALSE, fig.height=3, fig.width=4.5}
+grid.arrange(gg_acf(max_ts, "FAC máxima"), gg_pacf(max_ts, "FACP máxima"))
+grid.arrange(gg_acf(close_ts, "FAC fechamento"), gg_pacf(close_ts, "FACP fechamento"))
+```
+</div>
+</div>
+
+```{r, warning = FALSE, fig.height=3, fig.width=8, fig.align='center'}
+grid.arrange(gg_acf(vol_ts, "FAC volume"), gg_pacf(vol_ts, "FACP volume"))
+```
+
+A partir dos gráficos das séries, podemos inferir que somente a **Série Volume** aparenta ser estacionária. As demais claramente demonstram uma tendência ao longo do tempo, o que é bastante comum em séries financeiras, conforme assevera Moretin(2005, p.8). Tais constatações são evidenciadas pelos comportamentos das respectivas Funções de Autocrrelação e de Autocorrelação Parcial.
+
+---
+
+A fim de obter a obter a estacionariedade das séries de Abertura, Máxima, Mínima e Fechamento, tomaremos a primeira diferença de cada uma delas.
+
+```{r, warning=FALSE, fig.width=8}
+open_ts_diff <- diff(open_ts)
+max_ts_diff <- diff(max_ts)
+min_ts_diff <- diff(min_ts)
+close_ts_diff <- diff(close_ts)
+
+# 1 plot dygraphs para cada serie
+p1_diff <- dygraphs::dygraph(open_ts_diff, group="DJI_diff", main="Abertura - diferenciada") %>% dySeries("open", strokeWidth = 0.5, color="orange")
+p2_diff <- dygraphs::dygraph(max_ts_diff, group="DJI_diff", main="Máxima - diferenciada") %>% dySeries("max", strokeWidth = 0.5, color="red")
+p3_diff <- dygraphs::dygraph(min_ts_diff, group="DJI_diff", main="Mínima - diferenciada") %>% dySeries("min", strokeWidth = 1, color="lightgreen")
+p4_diff <- dygraphs::dygraph(close_ts_diff, group="DJI_diff", main="Fechamento - diferenciada") %>% dySeries("close", strokeWidth = 0.5, color="blue")
+
+
+```
+
+
+<div class = "row">
+<div class = "col-md-6">
+```{r,  warning = FALSE, fig.height=3, fig.width=4.5}
+p1_diff
+p3_diff
+```
+
+
+</div>
+<div class = "col-md-6">
+```{r, warning = FALSE, fig.height=3, fig.width=4.5}
+p2_diff
+p4_diff
+```
+</div>
+</div>
+
+\s\s
+Plots das FAC e FACP das séries diferenciadas:
+
+<div class = "row">
+<div class = "col-md-6">
+```{r,  warning = FALSE, fig.height=3, fig.width=4.5}
+grid.arrange(gg_acf(open_ts_diff, "FAC abertura - diff"), gg_pacf(open_ts_diff,"FACP abertura - diff"))
+grid.arrange(gg_acf(min_ts_diff, "FAC mínima - diff"), gg_pacf(min_ts_diff, "FACP mínima - diff"))
+```
+
+
+</div>
+<div class = "col-md-6">
+```{r, warning = FALSE, fig.height=3, fig.width=4.5}
+grid.arrange(gg_acf(max_ts_diff, "FAC máxima - diff"), gg_pacf(max_ts_diff, "FACP máxima - diff"))
+grid.arrange(gg_acf(close_ts_diff, "FAC fechamento - diff"), gg_pacf(close_ts_diff, "FACP fechamento - diff"))
+```
+</div>
+</div>
+
+Portanto, resta evidente dos gráficos acima que, após tomarmos a primeira diferença das 4 séries, estas passaram a apresentar comportamento estacionário.
+
+

@@ -1,0 +1,16 @@
+base
+tibbletime
+dplyr
+ggplot2
+readr
+lubridate
+reshape2
+bindrcpp
+forecast
+highcharter
+gridExtra
+zoo
+xts
+kableExtra
+knitr
+astsa

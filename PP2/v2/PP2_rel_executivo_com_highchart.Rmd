@@ -1,0 +1,1490 @@
+---
+title: "Relatório - Prova Prática 2"
+subtitle: "Análise de Séries Temporais"
+author: Allan Vieira 14/0128492
+date: "Junho de 2018"
+output:
+  html_document:
+    self_contained: false
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+---
+
+
+<!-- para justificar texto no markdown -->
+<!-- https://stackoverflow.com/questions/43222169/how-to-justify-the-text-to-both-sides-when-knitting-html-in-rmarkdown -->
+<style>
+body {
+text-align: justify}
+</style>
+
+
+<!-- para acrescentar logo da unb no cabeçalho -->
+<script>
+   $(document).ready(function() {
+     $head = $('#header');
+     $head.prepend('<img src=\"unb3.png\" style=\"float: right;width: 150px;\"/>')
+   });
+</script>
+
+
+---
+
+### 1) Análise da temperatura global em dados registrados pela NASA (Agência Espacial Norte-Americana) e pela NOAA (Administração Atmosférica e Oceânica Nacional), desde 1980.
+
+---
+
+#### **Contextualização do problema:**
+
+Se $W_t$ representa a temperatura global observada no mês $t$ (média mensal, em graus Celsius) e $\mu$ denota uma temepratura média global constante, o arquivo $\verb|TempGlobal.csv|$ encontrado no Aprender contém as séries históricas dos desvios $X_t = Y_t - \mu$, registradas pela NASA (Agência Espacial Norte-Americana) e pela NOAA (Administração Atmosférica e Oceânica Nacional), desde 1980. Para a NASA, o período base para a estomativa da média $\mu$ compreende o período de 1951 a 1980. Para a NOAA, o período base refere-se ao séc. XX.
+
+---
+
+#### **item i) Identificar um processo ARIMA para essas séries temporais, justificando a escolha por meio de critérios técnicos.**
+
+**Dados brutos antes do tratamento:**
+
+Após removermos a coluna de índices dos dados diretamente no Excel, temos:
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+# ----- leitura e carregamento
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+temp.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/TempGlobal_alt.csv"
+
+temp <- read_csv(temp.loc)
+
+# ----- data preparation
+# eliminando os NA's
+# e formatando Data para tibbletime
+temp2 <- temp %>%
+  na.omit() %>%
+  dplyr::mutate(Date = lubridate::ymd(Date)) %>% # usando ymd do lubridate
+  as_tbl_time(index = Date)
+  
+
+# head(matter3)
+temp2
+```
+
+
+Nosso interesse é obter o melhor modelo em termos técnicos, ou seja, obter um modelo ARIMA com o melhor desempenho de predição. Por isso, nossa estratégia não será a de testar a estacionariedade da série, mas sim ajustar modelos com a série sem diferenciar e com a série diferenciada e verificar seus resultados em termos do **Mean Absolute Percentage Error (MAPE)** na predição de um passo.
+
+Inicialmente, procedemos a uma análise de ordem exploratória nos dados para termos uma ideia do comportamento da série.
+
+Começamos pela plotagem das séries.
+
+**Gráficos das séries mensais:**
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+# crinado as ts
+X.NOAA_ts <- ts(temp2 %>% dplyr::select(X.NOAA), start = c(1880,1), end =c(2016,12), frequency = 12)
+# o fato de ser todo dia 15 nessas series nao importa -- a frequencia indica que sao 12 medicoes ao ano
+X.NASA_ts <- ts(temp2 %>% dplyr::select(X.NASA), start = c(1880,1), end = c(2016,12), frequency = 12)
+```
+
+
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE, fig.width=9}
+library(forecast)
+library(highcharter)
+library(ggplot2)
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', "#9467bd", "#8c564b")
+
+temp2_ts <- cbind(X.NOAA_ts, X.NASA_ts)
+
+hchart(temp2_ts) %>%
+  hc_colors(plotly_palette[1:2]) %>%
+  hc_title(text = "Série Histórica Mensal dos Desvios de Temperatura (1880 - 2016)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+```
+
+
+Faremos também o plot das séries anuais conforme segue.
+
+**Gráficos das séries anuais:**
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE, fig.width=9}
+# ----- plots serie:
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728')
+
+
+# --- serie:
+# highcharts:
+temp_ano <- temp2 %>%
+  as_period("1 y") # haverah uma linha para cada ano
+
+# crinado as ts
+X.NOAA_ano_ts <- ts(temp_ano %>% dplyr::select(X.NOAA), start = 1880, end = 2016, frequency = 1)
+
+X.NASA_ano_ts <- ts(temp_ano %>% dplyr::select(X.NASA), start = 1880, end = 2016, frequency = 1)
+
+
+temp_ano_ts <- cbind(X.NOAA_ano_ts, X.NASA_ano_ts)
+
+hchart(temp_ano_ts) %>%
+  hc_colors(plotly_palette[1:2]) %>%
+  hc_title(text = "Série Histórica Anual dos Desvios de Temperatura (1880 - 2016)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+  
+  
+```
+
+
+Finalizando nossa análise exploratória, fazemos os plots da Função de Autocorrelação (FAC) e da Função de Autocorrelação Parcial (FACP).
+
+**Plots da FAC e FACP:**
+
+```{r acfs_fun, echo=TRUE}
+# funcoes para plotar ACF e PACF nos moldes do ggplot2
+# adaptado de: https://stackoverflow.com/questions/42753017/adding-confidence-intervals-to-plotted-acf-in-ggplot2
+gg_acf <- function(ts, title="FAC", lag=1, lag.max=50){
+  ts_acf <- acf(ts, lag = lag, lag.max = lag.max, na.action = na.pass, plot=FALSE)
+
+  conf_lims <- c(-1,1)*qnorm(0.975)/sqrt(ts_acf$n.used)
+
+  ts_acf$acf %>%
+  # tibble::as_tibble() %>% dplyr::mutate(lags = 0:(n()-1)) %>%  # acf começa em zero e termina em n-1
+  tibble::as_tibble() %>% dplyr::mutate(lags = 0:(lag.max)) %>%  # acf começa em zero e termina em lag.max
+  ggplot2::ggplot(aes(x=lags, y = V1)) + ggplot2::scale_x_continuous(breaks=seq(0,lag.max,lag.max/10)) +
+  ggplot2::geom_hline(yintercept=conf_lims, lty=2, col='red', size=0.3) +
+  ggplot2::labs(y="Autocorrelations", x="Lag", title=title) +
+  ggplot2::geom_segment(aes(xend=lags, yend=0)) + theme_minimal()
+  #+ ggplot2::geom_point()
+}
+
+gg_pacf <- function(ts, title="FACP", lag=1, lag.max=50){
+  # ts = temp[,c("Date", "X.NASA")]
+  ts_pacf <- pacf(ts, lag = lag, lag.max = lag.max, na.action = na.pass, plot=FALSE)
+
+  # corrigindo no zero:
+  ts_pacf$acf <- c("0"=1, ts_pacf$acf)
+
+  conf_lims <- c(-1,1)*qnorm(0.975)/sqrt(ts_pacf$n.used)
+
+  ts_pacf$acf %>% # tb eh acf o objeto dentro do output de pacf
+  # tibble::as_tibble() %>% dplyr::mutate(lags = 1:n()) %>%  # pacf começa em 1 e termina em n
+  tibble::as_tibble() %>% magrittr::set_colnames(c("V1")) %>% # para funcionar apos a inclusao do zero
+  dplyr::mutate(lags = 0:(lag.max)) %>%  # acf começa em zero e termina em lag.max
+  ggplot2::ggplot(aes(x=lags, y = V1)) + ggplot2::scale_x_continuous(breaks=seq(0,lag.max,lag.max/10)) +
+  ggplot2::geom_hline(yintercept=conf_lims, lty=2, col='red', size=0.3) +
+  ggplot2::labs(y="Partial Autocorrelations", x="Lag", title=title) +
+  ggplot2::geom_segment(aes(xend=lags, yend=0)) + theme_minimal()
+  #+ ggplot2::geom_point()
+}
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, fig.height=4, echo=TRUE}
+
+library(gridExtra)
+grid.arrange(gg_acf(temp[,c("X.NOAA")], title = "FAC - NOAA", lag.max=12*5), gg_pacf(temp[,c("X.NOAA")], title = "FACP - NOAA", lag.max=12*5), ncol=2)
+
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, fig.height=4, echo=TRUE}
+
+library(gridExtra)
+grid.arrange(gg_acf(temp[,c("X.NASA")], title = "FAC - NASA", lag.max=12*5), gg_pacf(temp[,c("X.NASA")], title = "FACP - NASA", lag.max=12*5), ncol=2)
+
+
+```
+
+
+Fica claro que ambas as séries não aparentam ter estacionariedade, o que é reforçado por uma possível **tendência** nos gráficos mensais e anuais.  Por outro lado, não há evidências de sazonalidade, indicando a adequabilidade de um modelo **ARIMA não-sazonal** para o caso. Como nosso objetivo é obter o modelo com base na **abordagem empírica** de performance na predição, deixaremos que eventuais restrições relacionadas a não estacionariedade reflitam nos resultados ao selecionarmos os melhores modelos. Utilizaremos o **Mean Absolute Percentage Error (MAPE)** de um passo a frente como critério de otimalidade, tomando como base os últimos 12 meses, para confeccionar um grid que nos apontará os modelos candidatos.
+
+
+
+
+---
+
+#### **Modelos sem diferenciação [ARIMA(p,0,q)]**
+
+
+
+```{r, echo=TRUE, cache = TRUE, eval=FALSE, echo=TRUE}
+# ----------------------------------------------------------------------- 
+# Identificao da ordem do processo
+# com base no erro de previsao 1 passo a frente
+# relativo as ultimas 12 observacoes
+# ----------------------------------------------------------------------- 
+
+X.0 <- temp[,c("X.NOAA"), drop=TRUE] # extrair somente os valores como vetor mesmo
+N <- nrow(temp[,c("X.NOAA")])
+
+X.0 <- temp[,c("X.NASA"), drop=TRUE]
+N <- nrow(temp[,c("X.NASA")])
+
+p.max = 7
+q.max = 3
+
+MAPE <- matrix(0, p.max+1, q.max+1)
+
+
+for (p in 0:p.max){
+  for (q in 0:q.max){
+    previsto <- NULL
+    observado <- NULL
+    for (t in 0:11){
+      X <- X.0[1:(N-12+t)]
+      n <- length(X)
+      # fit  <- arima(X, order=c(p, 1, q),xreg=1:n) #Certo
+      fit  <- arima(X, order=c(p, 0, q),xreg=1:n) #Certo
+      prev <- predict(fit, n.ahead = 1, newxreg=(n+1))
+      obs  <- X.0[N-12+t+1]
+      previsto[t+1] <- prev$pred
+      observado[t+1] <- obs
+    }
+  MAPE[(p+1),(q+1)] <- 100*(mean(abs((previsto-observado)/observado)))
+  }
+}
+
+MAPE_nodiff_NOAA <- MAPE
+MAPE_nodiff_NASA <- MAPE
+
+readr::write_tsv(as.data.frame(MAPE_nodiff_NOAA), path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_nodiff_NOAA.txt")
+
+readr::write_tsv(as.data.frame(MAPE_nodiff_NASA), path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_nodiff_NASA.txt")
+
+```
+
+
+Temos os seguintes *grids* resultantes do algoritmo de otimização:
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+MAPE_nodiff_NOAA <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_nodiff_NOAA.txt") %>%
+  magrittr::set_colnames(paste0("q=", 0:3)) %>%
+  as.data.frame() %>%
+  round(., 4) %>%
+  `rownames<-`(paste0("p=", 0:7))
+
+
+MAPE_nodiff_NASA <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_nodiff_NASA.txt") %>%
+  magrittr::set_colnames(paste0("q=", 0:3)) %>%
+  as.data.frame() %>%
+  round(.,4) %>%
+  `rownames<-`(paste0("p=", 0:7))
+
+```
+
+
+Para cada série analisada, elencamos os 3 melhores modelo, os quais são destacados nos respectivos *grids*.
+
+<div class = "row">
+<div class = "col-md-6">
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(kableExtra)
+library(knitr)
+
+MAPE_nodiff_NOAA %>%
+  dplyr::mutate(
+    `q=1` = cell_spec(`q=1`, 
+                      background = ifelse(`q=1` == 7.9136, plotly_palette[3], 
+                               ifelse(`q=1` < 8.03 & `q=1` != 7.9136, plotly_palette[1], "white")), 
+                      color = dplyr::if_else(`q=1` < 8.03, "white", "black")), 
+    # `q=0` = cell_spec(`q=0`, 
+    #                   background = ifelse(`q=0` < 8.03, plotly_palette[1], "white"), 
+    #                               color = dplyr::if_else(`q=0` < 8.03, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black")) %>%
+  dplyr::select(ordem, paste0("q=", 0:3)) %>%
+  kable(format="html", escape=F, digits = 4, caption="grid NOAA") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) #%>%
+  
+```
+
+</div>
+<div class = "col-md-6">
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+MAPE_nodiff_NASA %>%
+  dplyr::mutate(
+    `q=1` = cell_spec(`q=1`, 
+                      background = ifelse(`q=1` == 11.2289, plotly_palette[3], 
+                               ifelse(`q=1` < 11.3 & `q=1` != 11.2289, plotly_palette[1], "white")), 
+                      color = dplyr::if_else(`q=1` < 8.03, "white", "black")), 
+    
+  `q=2` = cell_spec(`q=2` , 
+                      background = ifelse(`q=2` < 11.5, plotly_palette[2], "white"), 
+                      color = dplyr::if_else(`q=2` < 11.5, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black"),
+  
+  `q=0` = cell_spec(`q=0` , 
+                      background = ifelse(`q=0` < 11.3, plotly_palette[2], "white"), 
+                      color = dplyr::if_else(`q=0` < 11.3, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black")) %>%
+  dplyr::select(ordem, paste0("q=", 0:3)) %>%
+  kable(format="html", escape=F, digits = 4, caption="grid NASA") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) #%>%
+  
+```
+
+
+</div>
+</div>
+
+Após selecionarmos os melhores modelos no caso da série não diferenciada, passamos para a confecção dos *grids* de desempenho para a série diferenciada. 
+
+---
+
+#### **Modelos com diferenciação de ordem 1 [ARIMA(p,1,q)]**
+
+Novamente, utilizaremos o **Mean Absolute Percentage Error (MAPE)** de um passo a frente como critério de otimalidade e tomando como base os últimos 12 meses para confeccionar um grid que nos apontará os modelos candidatos.
+
+```{r, echo=TRUE, cache = TRUE, eval=FALSE}
+# ----------------------------------------------------------------------- 
+# Identificao da ordem do processo
+# com base no erro de previsao 1 passo a frente
+# relativo as ultimas 12 observacoes
+# ----------------------------------------------------------------------- 
+
+X.0 <- temp[,c("X.NOAA"), drop=TRUE] # extrair somente os valores como vetor mesmo
+N <- nrow(temp[,c("X.NOAA")])
+
+X.0 <- temp[,c("X.NASA"), drop=TRUE]
+N <- nrow(temp[,c("X.NASA")])
+
+p.max = 7
+q.max = 3
+
+MAPE <- matrix(0, p.max+1, q.max+1)
+
+
+for (p in 0:p.max){
+  for (q in 0:q.max){
+    previsto <- NULL
+    observado <- NULL
+    for (t in 0:11){
+      X <- X.0[1:(N-12+t)]
+      n <- length(X)
+      fit  <- arima(X, order=c(p, 1, q),xreg=1:n) #Certo
+      # fit  <- arima(X, order=c(p, 0, q),xreg=1:n) #Certo
+      prev <- predict(fit, n.ahead = 1, newxreg=(n+1))
+      obs  <- X.0[N-12+t+1]
+      previsto[t+1] <- prev$pred
+      observado[t+1] <- obs
+    }
+  MAPE[(p+1),(q+1)] <- 100*(mean(abs((previsto-observado)/observado)))
+  }
+}
+
+MAPE_diff_NOAA <- MAPE
+MAPE_diff_NASA <- MAPE
+
+readr::write_tsv(as.data.frame(MAPE_diff_NOAA), path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_diff_NOAA.txt")
+
+readr::write_tsv(as.data.frame(MAPE_diff_NASA), path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_diff_NASA.txt")
+
+```
+
+
+Temos os seguintes *grids* resultantes do algoritmo de otimização:
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+MAPE_diff_NOAA <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_diff_NOAA.txt") %>%
+  magrittr::set_colnames(paste0("q=", 0:3)) %>%
+  as.data.frame() %>%
+  round(., 4) %>%
+  `rownames<-`(paste0("p=", 0:7))
+
+
+MAPE_diff_NASA <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_diff_NASA.txt") %>%
+  magrittr::set_colnames(paste0("q=", 0:3)) %>%
+  as.data.frame() %>%
+  round(.,4) %>%
+  `rownames<-`(paste0("p=", 0:7))
+
+```
+
+
+Para cada série analisada, elencamos os 3 melhores modelo, os quais são destacados nos respectivos *grids*.
+
+<div class = "row">
+<div class = "col-md-6">
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(kableExtra)
+library(knitr)
+
+MAPE_diff_NOAA %>%
+  dplyr::mutate(
+    `q=1` = cell_spec(`q=1`, 
+                      background = ifelse(`q=1` == 8.0038, plotly_palette[3], 
+                               ifelse(`q=1` < 8.07 & `q=1` != 7.9136, plotly_palette[1], "white")), 
+                      color = dplyr::if_else(`q=1` < 8.03, "white", "black")), 
+    # `q=0` = cell_spec(`q=0`, 
+    #                   background = ifelse(`q=0` < 8.03, plotly_palette[1], "white"), 
+    #                               color = dplyr::if_else(`q=0` < 8.03, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black")) %>%
+  dplyr::select(ordem, paste0("q=", 0:3)) %>%
+  kable(format="html", escape=F, digits = 4, caption="grid NOAA") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) #%>%
+  
+```
+
+</div>
+<div class = "col-md-6">
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+MAPE_diff_NASA %>%
+  dplyr::mutate(
+    `q=1` = cell_spec(`q=1`, 
+                      background = ifelse(`q=1` == 11.1388, plotly_palette[3], 
+                               ifelse(`q=1` < 11.3 & `q=1` != 11.2289, plotly_palette[2], "white")), 
+                      color = dplyr::if_else(`q=1` < 8.03, "white", "black")), 
+    
+  `q=2` = cell_spec(`q=2` , 
+                      background = ifelse(`q=2` == 11.1388, plotly_palette[3], "white"), 
+                      color = dplyr::if_else(`q=2` < 11.3, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black"),
+  
+  `q=0` = cell_spec(`q=0` , 
+                      background = ifelse(`q=0` < 11.3, plotly_palette[2], "white"), 
+                      color = dplyr::if_else(`q=0` < 11.3, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black")) %>%
+  dplyr::select(ordem, paste0("q=", 0:3)) %>%
+  kable(format="html", escape=F, digits = 4, caption="grid NASA") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) #%>%
+  
+```
+
+
+</div>
+</div>
+
+
+No caso da série *NOAA* os melhores modelos apareceram no caso sem diferenciar, ao passo que na série *NASA*, os melhores modelos estão na série com diferenciação de 1ª ordem. Portanto, utilizando como critério o desempenho medido pelo *MAPE* de um passo, no caso *NOAA*, o modelo escolhido é um **ARIMA(4,0,1)** (ou ARMA(4,1)). No caso da série *NASA*, o modelo escolhido é um **ARIMA(3,1,2)**.
+
+
+**Plot valores preditos vs. observados nos modelos selecionados:**
+
+Abaixo apresentamos os plots comparando os valores observados e valores preditos para as últimas 12 observações para os modelos selecionados.
+
+
+<div class = "row">
+<div class = "col-md-6">
+```{r, fig.height=4, fig.width=4.7, echo=TRUE}
+
+X.0 <- X.NOAA_ts
+N <- length(X.0)
+
+previsto <- NULL
+observado <- NULL
+for (t in 0:11){
+  X <- X.0[1:(N-12+t)]
+  n <- length(X)
+  fit  <- arima(X, order=c(4, 0, 1),xreg=1:n)
+  prev <- predict(fit, n.ahead = 1, newxreg=(n+1))
+  obs  <- X.0[N-12+t+1]
+  previsto[t+1] <- prev$pred
+  observado[t+1] <- obs
+}
+
+hchart(as.ts(observado), name="observado") %>%
+  hc_add_series(as.ts(previsto), name="previsto") %>%
+  hc_colors(plotly_palette[c(1,4)]) %>%
+  hc_title(text = "NOAA - Previsto vs Observado (últimas 12 obs) - Arima(4,0,1)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+```
+
+</div>
+<div class = "col-md-6">
+
+```{r, fig.height=4, fig.width=4.7, echo=TRUE}
+
+X.0 <- X.NASA_ts
+N <- length(X.0)
+
+previsto <- NULL
+observado <- NULL
+for (t in 0:11){
+  X <- X.0[1:(N-12+t)]
+  n <- length(X)
+  fit  <- arima(X, order=c(3, 1, 2),xreg=1:n)
+  prev <- predict(fit, n.ahead = 1, newxreg=(n+1))
+  obs  <- X.0[N-12+t+1]
+  previsto[t+1] <- prev$pred
+  observado[t+1] <- obs
+}
+
+hchart(as.ts(observado), name="observado") %>%
+  hc_add_series(as.ts(previsto), name="previsto") %>%
+  hc_colors(plotly_palette[c(2,4)]) %>%
+  hc_title(text = "NASA - Previsto vs Observado (últimas 12 obs) - Arima(3,1,2)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+```
+
+</div>
+</div>
+
+---
+
+#### **item ii) Previsões (tendências) para os próximos 12 meses**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+# ajuste
+
+library(forecast)
+# NOAAfit <- arima(X.NOAA_ts, order=c(3,0,1)) # erro ! non-stationary AR part from CSS
+
+NOAAfit <- arima(X.NOAA_ts, order=c(4,0,1), method="ML") # mais lento, porem mais acurado
+
+
+NASAfit <- arima(X.NASA_ts, order=c(3,1,2), method = "ML")
+
+
+```
+
+
+**Valores Preditos NOAA:**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=9}
+library(forecast)
+NOAAfcast <- forecast(NOAAfit, h=12)
+as.data.frame(NOAAfcast, rownames = TRUE)
+
+
+```
+
+
+
+**Valores Preditos NASA:**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=9}
+NASAfcast <- forecast(NASAfit, h=12)
+as.data.frame(NASAfcast, rownames=TRUE)
+
+```
+
+
+**Plots dos valores preditos:**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=9}
+# help(window)
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', "#9467bd", "#8c564b")
+
+NOAAfcast_window <- NOAAfcast # para selecionar janelas de tempo em ts
+NOAAfcast_window$x <- window(NOAAfcast$x, 2008, 2017)
+hchart(NOAAfcast_window, name="NOAA", type="line") %>%
+  hc_colors(plotly_palette[c(1,5,4,3,6)]) %>%
+  hc_title(text = "NOAA - Série Histórica Mensal dos Desvios de Temperatura - Previsão 12 Meses (zoom Jan 2008 - Dez 2017)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+# plot(NOAAfcast_window)
+
+NASAfcast_window <- NASAfcast # para selecionar janelas de tempo
+NASAfcast_window$x <- window(NASAfcast$x, 2008, 2017)
+hchart(NASAfcast_window, name="NASA", type="line")  %>%
+  hc_colors(plotly_palette[c(2,5,4,3,6)]) %>%
+  hc_title(text = "NASA - Série Histórica Mensal dos Desvios de Temperatura - Previsão 12 Meses (zoom Jan 2008 - Dez 2017)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+# plot(NASAfcast_window)
+
+```
+
+
+
+
+---
+
+---
+
+### 2) Análise dos volumes mensais evaporados no reservatório *Echo* - Colorado - EUA, desde 1967.
+
+---
+
+#### **Contextualização do problema:**
+
+O arquivo $\verb|Echo.csv|$ contém a série histórica dos volumes mensais evaporados (em acre-pé) no reservatório *Echo*, desde 1967, localizado na região do Colorado, nos Estados Unidos.
+
+---
+
+#### **item i) Identificar um processo SARIMA para a série temporal, justificando a escolha por meio de critérios técnicos.**
+
+
+**Dados:**
+
+Após removermos a coluna de índices dos dados diretamente no Excel, temos:
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+# ----- leitura e carregamento
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+library(highcharter)
+
+echo.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/Echo_alt.csv"
+
+echo <- read_csv(echo.loc)
+
+# ----- data preparation
+# eliminando os NA's
+# e formatando Data para tibbletime
+echo2 <- echo %>%
+  na.omit() %>%
+  dplyr::mutate(Date = lubridate::dmy(Date)) %>% # usando dmy do lubridate
+  as_tbl_time(index = Date)
+  
+echo2
+```
+
+Começamos pela plotagem das séries, a fim de proceder a uma análise exploratória. 
+
+**Gráficos das séries mensais:**
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+# crinado as ts
+echo_ts <- ts(echo2 %>% dplyr::select(X), start = c(1967,1), end =c(2018,1), frequency = 12)
+
+```
+
+
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE, fig.width=9}
+library(forecast)
+library(highcharter)
+library(ggplot2)
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', "#9467bd", "#8c564b")
+
+
+hchart(echo_ts) %>%
+  hc_colors(plotly_palette[5]) %>%
+  hc_title(text = "Série Histórica Mensal de Evaporação - Reservatório Echo  (1967 - 2018)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+```
+
+
+<div class = "row">
+<div class = "col-md-6">
+
+**Gráfico da série semestral:**
+
+```{r, fig.height=4, fig.width=4.7, echo=TRUE}
+# ----- plots serie:
+
+
+# --- serie:
+# ggplot:
+p1_smst <- echo2 %>%
+  as_period("6 months") %>% # haverah uma linha para cada ano
+  ggplot() +
+  geom_line(aes(x = Date, y = X), size=0.3, alpha = 0.5, colour=plotly_palette[5]) +
+  labs(x="Data", y="Valores")+
+  ggtitle("Série Histórica Semestral\nReservatório Echo  (1967 - 2018)")+
+  theme_bw()+
+  theme(panel.border = element_blank())+ # para ficar igual o plotly
+  guides(color=guide_legend(title=NULL))+
+  # scale_color_manual(values=plotly_palette[4])+
+  theme(plot.title = element_text(hjust=0.5))
+
+plotly::ggplotly(p1_smst) %>%
+  plotly::layout(legend = list(orientation = "h", x = 0.37, y =-0.1))
+
+```
+
+</div>
+<div class = "col-md-6">
+
+**Gráfico da série anual:**
+
+```{r, fig.height=4, fig.width=4.7, echo=TRUE}
+# ----- plots serie:
+
+# --- serie:
+# ggplot:
+p1_ano <- echo2 %>%
+  as_period("1 year") %>% # haverah uma linha para cada ano
+  ggplot() +
+  geom_line(aes(x = Date, y = X), size=0.3, alpha = 0.5, colour=plotly_palette[5]) +
+  labs(x="Data", y="Valores")+
+  ggtitle("Série Histórica Anual\nReservatório Echo  (1967 - 2018)")+
+  theme_bw()+
+  theme(panel.border = element_blank())+ # para ficar igual o plotly
+  guides(color=guide_legend(title=NULL))+
+  # scale_color_manual(values=plotly_palette[4])+
+  theme(plot.title = element_text(hjust=0.5))
+
+plotly::ggplotly(p1_ano) %>%
+  plotly::layout(legend = list(orientation = "h", x = 0.37, y =-0.1))
+
+```
+
+</div>
+</div>
+
+Como não conhecemos muito bem a série, optamos por fazer um gráfico das médias mensais. Isso ajudará a confirmarmos um eventual comportamento sazonal.
+
+**Plot das médias mensais:**
+
+```{r, fig.heigth=4, fig.width=6, echo=TRUE}
+# ----- plots serie:
+
+# --- serie:
+# ggplot:
+p1_medias <- echo2 %>%
+  dplyr::mutate(month = format(Date, "%m"), year = format(Date, "%Y")) %>%
+  group_by(month) %>%
+  dplyr::summarise(medias = mean(X)) %>%
+  ggplot() +
+  geom_line(aes(x = month, y = medias, group=1), size=0.7, alpha = 0.5, colour=plotly_palette[5]) +
+  labs(x="Data", y="Valores")+
+  ggtitle("Médias Mensais\nReservatório Echo  (1967 - 2018)")+
+  theme_bw()+
+  theme(panel.border = element_blank())+ # para ficar igual o plotly
+  guides(color=guide_legend(title=NULL))+
+  # scale_color_manual(values=plotly_palette[4])+
+  theme(plot.title = element_text(hjust=0.5))
+
+plotly::ggplotly(p1_medias) %>%
+  plotly::layout(legend = list(orientation = "h", x = 0.37, y =-0.1))
+
+```
+
+\   
+\  
+
+Nos gráficos mensal, semestral e anual já é possível notar a presença de sazonalidade. Dirimindo quaisquer dúvidas sobre esta última constatação, o gráfico das médias mensais mostra que há diferenças entre os meses e, portanto, sazonalidade na série. Neste último gráfico, assim como no mensal e no semestral, verifica-se que a evaporação sobe no primeiro semestre de cada ano, atingindo o pico no mês de julho (período mais quente no hemisfério norte) para em seguida declinar, atingindo o menor valor para o ano no mês de dezembro (período mais frio).
+
+O gráfico anual serve apenas para uma análise mais completa e de modo que pudéssemos eventualmente verificar possíveis ciclos entre os anos. Com exceção do pico no ano de 1986 (que provavelmente não é uma quebra estrutural), a série, em termos anuais, parece ser bem comportada.
+
+A série não parece indicar a presença de qualquer tendência. Para confirmar novamente a existência de sazonalidade e eliminar quaisquer dúvidas acerca de uma eventual tendência, utilizamos os plots da FAC e FACP diferenciada de *lag* **S=12**. Este valor deve-se ao fato de que, por termos uma série mensal - que apresentou comportamento sazonal dentro do ano (diferenças entre os meses), espera-se que os valores de evaporação do mesmo mês do ano seguinte estejam correlacionados aos valores do mesmo mês do último ano. Este plot também nos ajudará a identificar componentes tanto **não-sazonais** quanto **sazonais** de nosso modelo **ARIMA(p,i,q)$\times$(P,D,Q)$_{[12]}$**.
+
+**Plots da FAC e FACP diferenciada para S=12:**
+
+<!-- ```{r, message=FALSE, warning=FALSE, fig.width=9, fig.height=4, echo=TRUE} -->
+
+<!-- library(gridExtra) -->
+<!-- grid.arrange(gg_acf(diff(echo_ts, 12 ), title = "FAC - NOAA", lag.max=150), gg_pacf(diff(echo_ts, 12 ), title = "FACP - NOAA", lag.max=150), ncol=2) -->
+
+
+<!-- ``` -->
+
+
+<!-- Portanto, o comportamento sazonal é confirmado na FAC, o que nos indica tratar-se de um modelo sazonal. Como ciclo se completa após 12 *lags*, utilizaremos um modelo  -->
+
+<!-- Vamos olhar para a FAC e FACP da série diferenciada para obtermos alguns valores como chute inicial da ordem de nosso modelo: -->
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, fig.height=4, echo=TRUE}
+
+library(gridExtra)
+grid.arrange(gg_acf(diff(echo_ts, lag=12), title = "FAC - Echo", lag.max=12*5), gg_pacf(diff(echo_ts, lag=12), title = "FACP - Echo", lag.max=12*5), ncol=2)
+
+```
+
+Na FACP e na FAC, na parte não-sazonal, há picos mais significantes nos *lags* 1, 2 e 11 assim como na FAC. Já na porção sazonal da FAC, temos picos claros que vão reduzindo de intensidade em múltiplos de $S=12$.
+
+Passamos, então, ao ajuste dos Modelos **SARIMA** para nossos dados.
+
+**Ajuste do modelo:**
+
+Algoritmo para testar várias combinações de modelo até ordem 3 e calcular o BIC:
+
+```{r, message=FALSE, warning=FALSE, eval=FALSE, echo=TRUE}
+library(astsa)
+
+# ordens que queremos testar
+x <- rep(0:3, 2)
+# ou # expand.grid(df = data.frame(x=0:3, y=0:3))
+
+cb1 <- combn(x, 2)
+
+cb1 <- t(unique(t(cb1)))
+
+cb1 <- cb1[,-3] # eliminando coluna soh de zeros
+
+# cb1 <- cb1[,-c(3,4,5,9,13,14,15)]
+
+# cb2 <- combn(rev(x), 2)
+# cb1[1,5] <- "a"
+cb2 <- cb1
+
+BIC.v <- NULL
+k = 0
+model.orders <- NULL
+# library(astsa)
+  for(j in 1:ncol(cb1)){
+
+      for(J in 1:ncol(cb2)){
+        p <- cb1[1,j]
+        q <- cb1[2,j]
+        
+        P <- cb2[1,J]
+        Q <- cb2[2,J]
+        
+        k <- k + 1
+        model.orders[k] <- paste(p,0,q,P,1,Q, sep=",")
+        # assign(paste0("m.", k), sarima(echo_ts, p,0,q, P,1,Q, S=12, details=FALSE))
+        
+        BIC.v[k] <- tryCatch({
+          m <- sarima(echo_ts, p,0,q, P,1,Q, S=12, details=FALSE)
+          m$BIC
+        },
+        error = function(e){
+          "erro"
+        })
+        
+      }
+
+  }
+
+dfBIC <- data.frame(model = model.orders, BIC = BIC.v)
+
+# ordenando
+dfBIC2 <- dfBIC %>%
+  dplyr::mutate(BIC = as.numeric(as.character(BIC))) %>%
+  dplyr::arrange(BIC, model )
+
+readr::write_tsv(dfBIC2, path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/dfBIC2.txt")
+
+```
+
+
+**Modelos testados em ordem de menor BIC:**
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+dfBIC2 <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/dfBIC2.txt") %>%
+  as.data.frame() %>%
+  dplyr::mutate(BIC = round(BIC, 4))
+  
+
+dfBIC2
+```
+
+
+Passamos agora ao cálculo dos MAPE dos modelos adotados como possíveis candidatos no cálculo do BIC.
+
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=FALSE}
+library(astsa)
+# X <- as.ts(echo$X)
+# tanto faz
+X <- echo2$X
+
+
+abs.pred.error <- NULL
+pred <- NULL
+n <- length(X)
+
+# fit <- arima(X, order=c(2,0,3), seasonal=list(order=c(3,1,2), period=12), 
+#          method="CSS-ML")
+# fit2 <- sarima(X, 2,0,3,3,1,2, S=12)
+
+for(t in 0:11){
+  model <- sarima.for(X[1:(n-12+t)], n.ahead=1,
+                      2,0,3,3,1,2, S=12, newxreg = n+1)
+  abs.pred.error[t+1] <- abs((X[(n-12+t+1)]-as.numeric(model$pred))/X[(n-12+t+1)])
+  pred[t+1] <- as.numeric(model$pred)
+}
+
+# mape.203312 <- mean(abs.pred.error)
+mape.203312 <- "erro optim"
+
+# ------------------------
+
+abs.pred.error <- NULL
+pred <- NULL
+n <- length(X)
+
+for(t in 0:11){
+  model <- sarima.for(X[1:(n-12+t)], n.ahead=1,
+                      3,0,2,3,1,2, S=12, newxreg = n+1)
+  abs.pred.error[t+1] <- abs((X[(n-12+t+1)]-as.numeric(model$pred))/X[(n-12+t+1)])
+  pred[t+1] <- as.numeric(model$pred)
+}
+
+
+mape.302312 <- mean(abs.pred.error)
+
+# ------------------------
+
+abs.pred.error <- NULL
+pred <- NULL
+n <- length(X)
+
+for(t in 0:11){
+  model <- sarima.for(X[1:(n-12+t)], n.ahead=1,
+                      2,0,3,3,1,3, S=12, newxreg = n+1)
+  abs.pred.error[t+1] <- abs((X[(n-12+t+1)]-as.numeric(model$pred))/X[(n-12+t+1)])
+  pred[t+1] <- as.numeric(model$pred)
+}
+
+
+mape.203313 <- mean(abs.pred.error)
+
+
+# ------------------------
+
+abs.pred.error <- NULL
+pred <- NULL
+n <- length(X)
+
+for(t in 0:11){
+  model <- sarima.for(X[1:(n-12+t)], n.ahead=1,
+                      3,0,3,3,1,2, S=12, newxreg = n+1)
+  abs.pred.error[t+1] <- abs((X[(n-12+t+1)]-as.numeric(model$pred))/X[(n-12+t+1)])
+  pred[t+1] <- as.numeric(model$pred)
+}
+
+
+mape.303312 <- mean(abs.pred.error)
+mape.303312 <- "erro optim"
+
+
+# ------------------------
+
+abs.pred.error <- NULL
+pred <- NULL
+n <- length(X)
+
+for(t in 0:11){
+  model <- sarima.for(X[1:(n-12+t)], n.ahead=1,
+                      3,0,0,3,1,3, S=12, newxreg = n+1)
+  abs.pred.error[t+1] <- abs((X[(n-12+t+1)]-as.numeric(model$pred))/X[(n-12+t+1)])
+  pred[t+1] <- as.numeric(model$pred)
+}
+
+
+mape.300313 <- mean(abs.pred.error)
+
+
+# ------------------------
+
+abs.pred.error <- NULL
+pred <- NULL
+n <- length(X)
+
+for(t in 0:11){
+  model <- sarima.for(X[1:(n-12+t)], n.ahead=1,
+                      3,0,0,2,1,3, S=12, newxreg = n+1)
+  abs.pred.error[t+1] <- abs((X[(n-12+t+1)]-as.numeric(model$pred))/X[(n-12+t+1)])
+  pred[t+1] <- as.numeric(model$pred)
+}
+
+
+mape.300213 <- mean(abs.pred.error)
+
+mape.sarima <- data.frame(mape = c(mape.203312, round(mape.302312,4), round(mape.203313,4), mape.303312, round(mape.300313,4), round(mape.300213,4)))
+readr::write_tsv(mape.sarima, path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/mape_sarima.txt")
+```
+
+**Grid com o melhor modelo:**
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE}
+
+mape.sarima <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/mape_sarima.txt")
+# nao eh numeric
+
+df.result <- cbind(dfBIC2[1:6,], mape.sarima)
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', "#9467bd", "#8c564b")
+library(knitr)
+library(kableExtra)
+
+
+df.result %>%
+  dplyr::mutate(
+    mape = cell_spec(mape,
+                      background = ifelse(mape == "0.1744", plotly_palette[3], "white"),
+                      color = dplyr::if_else(mape == "0.1744", "white", "black"))) %>%
+    # mape nesse caso eh string, nao eh numero
+  kable(format="html", escape=F, digits = 4, caption="Grid SARIMA") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = T) #%>%
+
+
+```
+
+
+Portanto, o modelo mais adequado ao caso, utilizando como critério o **MAPE** seria o **ARIMA(2,0,3)$\times$(3,1,3)$_{[12]}$**.
+
+**Plot valores preditos vs. observados nos modelos selecionados:**
+
+Abaixo apresentamos os plots comparando os valores observados e valores preditos para as últimas 12 observações para o modelo selecionado.
+
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE, eval=FALSE}
+library(astsa)
+X <- echo2$X
+
+abs.pred.error <- NULL
+pred <- NULL
+n <- length(X)
+
+for(t in 0:11){
+  model <- sarima.for(X[1:(n-12+t)], n.ahead=1,
+                      2,0,3,3,1,3, S=12, newxreg = n+1)
+  abs.pred.error[t+1] <- abs((X[(n-12+t+1)]-as.numeric(model$pred))/X[(n-12+t+1)])
+  pred[t+1] <- as.numeric(model$pred)
+}
+
+
+X.last.12 <- X[(n-11):n]
+
+obs_pred.sarima <- data.frame(X.last.12, pred)
+readr::write_tsv(obs_pred.sarima, path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/obs_pred.sarima.txt")
+
+
+
+```
+
+
+```{r, message=FALSE, warning=FALSE, echo=TRUE, fig.height=3.5, fig.width=7, echo=TRUE}
+obs_pred.sarima <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/obs_pred.sarima.txt")
+
+X.last.12 <- obs_pred.sarima$X.last.12
+
+pred <- obs_pred.sarima$pred
+
+```
+
+
+```{r, fig.height=4, fig.width=4.7, echo=TRUE}
+
+hchart(as.ts(X.last.12), name="observado") %>%
+  hc_add_series(as.ts(pred), name="previsto") %>%
+  hc_colors(plotly_palette[c(5,4)]) %>%
+  hc_title(text = "Echo - Previsto vs Observado (últimas 12 obs) - Arima(2,0,3)x(3,1,3)[12]",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+```
+
+
+---
+
+#### **item ii) Previsões (perfil sazonal) para os próximos 12 meses**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+
+library(forecast)
+library(astsa)
+
+echofit <- arima(echo_ts, order=c(2,0,3), seasonal=list(order=c(3,1,3),period=12)) # usaremos arima para facilitar o plot
+
+echofcast <- forecast(echofit, h=12)
+
+
+```
+
+
+**Valores Preditos:**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+as.data.frame(echofcast, rownames = TRUE)
+
+
+```
+
+
+**Plots dos valores preditos:**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=9}
+# help(window)
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', "#9467bd", "#8c564b")
+
+echofcast_window <- echofcast # para selecionar janelas de tempo em ts
+echofcast_window$x <- window(echofcast$x, 2010, 2018)
+hchart(echofcast_window, name="NOAA", type="line") %>%
+  hc_colors(plotly_palette[c(5,1,4,3,6)]) %>%
+  hc_title(text = "Série Histórica Mensal de Evaporação - Previsão 12 Meses (zoom Jan 2010 - Dez 2018)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+# plot(echofcast)
+```
+
+
+---
+
+---
+
+---
+
+### 3) Análise dos níveis máximos anuais do Rio Nilo (622 D.C. - 1284 D.C.)
+
+---
+
+#### **Contextualização do problema:**
+
+O arquivo $\verb|DadosNilo2.txt|$ contém a série histórica dos níveis máximos anuais observados no Rio Nilo, Egito, do ano 622 D.C. ao ano 1284 D.C.
+
+---
+
+#### **item i) Identificar um processo ARIMA para essa série temporal, justificando a escolha por meio de critérios técnicos.**
+
+**Dados brutos antes do tratamento:**
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+# ----- leitura e carregamento
+library(tibbletime)
+library(dplyr)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(reshape2)
+
+nilo.loc <- "/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/DadosNilo2.txt"
+
+nilo <- as.data.frame(scan(nilo.loc, what = list(volume=0)))
+
+# nilo[is.na(nilo),]
+
+nilo
+
+```
+
+
+Nosso interesse é obter o melhor modelo em termos técnicos, ou seja, obter um modelo ARIMA com o melhor desempenho de predição. Por isso, nossa estratégia não será a de testar a estacionariedade da série, mas sim ajustar modelos com a série sem diferenciar e com a série diferenciada e verificar seus resultados em termos do **Mean Absolute Percentage Error (MAPE)** na predição de um passo.
+
+Inicialmente, procedemos a uma análise de ordem exploratória nos dados para termos uma ideia do comportamento da série.
+
+Começamos pela plotagem das séries.
+
+**Gráficos das séries mensais:**
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE}
+# crinado as ts
+nilo_ts <- ts(nilo %>% dplyr::select(volume), start = 622, end = 1284, frequency = 1) # uma por ano
+
+```
+
+
+```{r, warning=FALSE, message=FALSE, echo=TRUE, fig.width=9}
+library(forecast)
+library(highcharter)
+library(ggplot2)
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', "#9467bd", "#8c564b")
+
+
+hchart(nilo_ts, nome="volume") %>%
+  hc_colors(plotly_palette[6]) %>%
+  hc_title(text = "Série Histórica Nível Máximo Anual do Rio Nilo (622 D.C. - 1284 D.C.)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+```
+
+
+**Plots da FAC e FACP:**
+
+```{r, message=FALSE, warning=FALSE, fig.width=9, fig.height=4, echo=TRUE}
+
+library(gridExtra)
+grid.arrange(gg_acf(nilo_ts, title = "FAC - Nilo", lag.max=12*10), gg_pacf(nilo_ts, title = "FACP - Nilo", lag.max=12*10), ncol=2)
+
+
+```
+
+Olhando para o gráfico da série, não parece haver qualquer tendência nos dados. Não há evidências também de sazonalidade, indicando a adequabilidade de um modelo **ARIMA não-sazonal** para o caso. A FAC apresenta um decaimento relativamente lento, mas que indica provavelmente um modelo autorregressivo de memória longa e talvez não uma ausência de estacionariedade. Como nosso objetivo é obter o modelo com base na **abordagem empírica** de performance na predição, deixaremos que eventuais restrições relacionadas a uma possível não-estacionariedade da série reflitam nos resultados ao selecionarmos os melhores modelos. Utilizaremos o **Mean Absolute Percentage Error (MAPE)** de um passo a frente como critério de otimalidade, tomando como base os últimos 12 meses, para confeccionar um grid que nos apontará os modelos candidatos.
+
+
+---
+
+#### **Modelos sem diferenciação [ARIMA(p,0,q)]**
+
+
+```{r, echo=TRUE, cache = TRUE, eval=FALSE, echo=TRUE}
+# ----------------------------------------------------------------------- 
+# Identificao da ordem do processo
+# com base no erro de previsao 1 passo a frente
+# relativo as ultimas 12 observacoes
+# ----------------------------------------------------------------------- 
+
+X.0 <- nilo$volume # extrair somente os valores como vetor mesmo
+N <- length(nilo$volume)
+
+
+p.max = 7
+q.max = 3
+
+MAPE <- matrix(0, p.max+1, q.max+1)
+
+
+for (p in 0:p.max){
+  for (q in 0:q.max){
+    previsto <- NULL
+    observado <- NULL
+    for (t in 0:11){
+      X <- X.0[1:(N-12+t)]
+      n <- length(X)
+      # fit  <- arima(X, order=c(p, 1, q),xreg=1:n) #Certo
+      fit  <- arima(X, order=c(p, 0, q),xreg=1:n) #Certo
+      prev <- predict(fit, n.ahead = 1, newxreg=(n+1))
+      obs  <- X.0[N-12+t+1]
+      previsto[t+1] <- prev$pred
+      observado[t+1] <- obs
+    }
+  MAPE[(p+1),(q+1)] <- 100*(mean(abs((previsto-observado)/observado)))
+  }
+}
+
+MAPE_nodiff_nilo <- MAPE
+
+readr::write_tsv(as.data.frame(MAPE_nodiff_nilo), path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_nodiff_nilo.txt")
+
+
+
+```
+
+
+Temos os seguintes *grids* resultantes do algoritmo de otimização:
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+MAPE_nodiff_nilo <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_nodiff_nilo.txt") %>%
+  magrittr::set_colnames(paste0("q=", 0:3)) %>%
+  as.data.frame() %>%
+  round(., 4) %>%
+  `rownames<-`(paste0("p=", 0:7))
+
+
+```
+
+
+Para cada série analisada, elencamos os 3 melhores modelo, os quais são destacados nos respectivos *grids*.
+
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(kableExtra)
+library(knitr)
+
+MAPE_nodiff_nilo %>%
+  dplyr::mutate(
+    `q=0` = cell_spec(`q=0`, 
+                      background = ifelse(`q=0` == 4.3837, plotly_palette[3], 
+                               ifelse(`q=0` < 4.45 & `q=0` != 4.3837, plotly_palette[6], "white")), 
+                      color = dplyr::if_else(`q=0` < 4.45, "white", "black")), 
+    `q=1` = cell_spec(`q=1`,
+                      background = ifelse(`q=1` < 4.5, plotly_palette[6], "white"),
+                                  color = dplyr::if_else(`q=1` < 4.5, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black")) %>%
+  dplyr::select(ordem, paste0("q=", 0:3)) %>%
+  kable(format="html", escape=F, digits = 4, caption="grid Nilo - série não diferenciada") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) #%>%
+  
+```
+
+
+Após selecionarmos os melhores modelos no caso da série não diferenciada, passamos para a confecção dos *grids* de desempenho para a série diferenciada. 
+
+
+---
+
+#### **Modelos com diferenciação de ordem 1 [ARIMA(p,1,q)]**
+
+Novamente, utilizaremos o **Mean Absolute Percentage Error (MAPE)** de um passo a frente como critério de otimalidade e tomando como base os últimos 12 meses para confeccionar um grid que nos apontará os modelos candidatos.
+
+```{r, echo=TRUE, cache = TRUE, eval=FALSE, echo=TRUE}
+# ----------------------------------------------------------------------- 
+# Identificao da ordem do processo
+# com base no erro de previsao 1 passo a frente
+# relativo as ultimas 12 observacoes
+# ----------------------------------------------------------------------- 
+
+X.0 <- nilo$volume # extrair somente os valores como vetor mesmo
+N <- length(nilo$volume)
+
+
+p.max = 7
+q.max = 3
+
+MAPE <- matrix(0, p.max+1, q.max+1)
+
+
+for (p in 0:p.max){
+  for (q in 0:q.max){
+    previsto <- NULL
+    observado <- NULL
+    for (t in 0:11){
+      X <- X.0[1:(N-12+t)]
+      n <- length(X)
+      fit  <- arima(X, order=c(p, 1, q),xreg=1:n) #Certo
+      # fit  <- arima(X, order=c(p, 0, q),xreg=1:n) #Certo
+      prev <- predict(fit, n.ahead = 1, newxreg=(n+1))
+      obs  <- X.0[N-12+t+1]
+      previsto[t+1] <- prev$pred
+      observado[t+1] <- obs
+    }
+  MAPE[(p+1),(q+1)] <- 100*(mean(abs((previsto-observado)/observado)))
+  }
+}
+
+MAPE_diff_nilo <- MAPE
+
+readr::write_tsv(as.data.frame(MAPE_diff_nilo), path="/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_diff_nilo.txt")
+
+
+
+```
+
+
+Temos os seguintes *grids* resultantes do algoritmo de otimização:
+
+```{r, echo=TRUE, warning=FALSE, message=FALSE}
+MAPE_diff_nilo <- readr::read_tsv("/home/allan/Documents/1S2018/A_SERIES_TEMPORAIS/PP2/dados/MAPE_diff_nilo.txt") %>%
+  magrittr::set_colnames(paste0("q=", 0:3)) %>%
+  as.data.frame() %>%
+  round(., 4) %>%
+  `rownames<-`(paste0("p=", 0:7))
+
+
+```
+
+
+Para cada série analisada, elencamos os 3 melhores modelo, os quais são destacados nos respectivos *grids*.
+
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+library(kableExtra)
+library(knitr)
+
+MAPE_diff_nilo %>%
+  dplyr::mutate(
+    `q=0` = cell_spec(`q=0`, 
+                      background = ifelse(`q=0` == 4.0483, plotly_palette[3], 
+                               ifelse(`q=0` < 4.45 & `q=0` != 4.3837, plotly_palette[6], "white")), 
+                      color = dplyr::if_else(`q=0` < 4.45, "white", "black")), 
+    `q=1` = cell_spec(`q=1`,
+                      background = ifelse(`q=1` < 4.5, plotly_palette[6], "white"),
+                                  color = dplyr::if_else(`q=1` < 4.5, "white", "black")),
+                ordem = rownames(.), 
+                ordem = cell_spec(ordem, color = "black")) %>%
+  dplyr::select(ordem, paste0("q=", 0:3)) %>%
+  kable(format="html", escape=F, digits = 4, caption="grid Nilo - série diferenciada") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = F) #%>%
+  
+```
+
+
+Dentre os modelos analisados (para série não diferenciada e diferenciada), o melhor modelo, utilizando como critério o desempenho medido pelo *MAPE* de um passo é um **ARIMA(2,1,0)**, o que se aproxima do modelo sugerido por Aguado (1982), qual seja, Arima(2,1,1). A diferença deve-se provavelmente ao fato de Aguado (1982) ter utilizado como critério o ajuste do modelo comporando os BIC's, enquanto nós utilizamos o MAPE, focando no desempenho preditivo.
+
+
+**Plot valores preditos vs. observados nos modelos selecionados:**
+
+Abaixo apresentamos os plots comparando os valores observados e valores preditos para as últimas 12 observações para o modelo selecionado.
+
+
+```{r, fig.height=4, fig.width=4.7, echo=TRUE}
+
+X.0 <- nilo_ts
+N <- length(X.0)
+
+# X.0 <- nilo$volume # extrair somente os valores como vetor mesmo
+# N <- length(nilo$volume)
+
+
+previsto <- NULL
+observado <- NULL
+for (t in 0:11){
+  X <- X.0[1:(N-12+t)]
+  n <- length(X)
+  fit  <- arima(X, order=c(2, 1, 0),xreg=1:n)
+  prev <- predict(fit, n.ahead = 1, newxreg=(n+1))
+  obs  <- X.0[N-12+t+1]
+  previsto[t+1] <- prev$pred
+  observado[t+1] <- obs
+}
+
+hchart(as.ts(observado), name="observado") %>%
+  hc_add_series(as.ts(previsto), name="previsto") %>%
+  hc_colors(plotly_palette[c(6,4)]) %>%
+  hc_title(text = "Nível Máximo Nilo - Previsto vs Observado (últimas 12 obs) - Arima(2,1,0)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+
+```
+
+
+---
+
+#### **item ii) Previsões para os próximos 5 anos**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, cache=TRUE}
+
+library(forecast)
+library(astsa)
+
+nilofit <- arima(nilo_ts, order=c(2,1,0)) # usaremos arima para facilitar o plot
+
+nilofcast <- forecast(nilofit, h=5)
+
+
+```
+
+
+**Valores Preditos:**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE}
+as.data.frame(nilofcast, rownames = TRUE)
+
+
+```
+
+
+**Plot dos valores preditos:**
+
+```{r, echo=TRUE, message=FALSE, warning=FALSE, fig.width=9}
+# help(window)
+
+plotly_palette <- c('#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', "#9467bd", "#8c564b")
+
+nilofcast_window <- nilofcast # para selecionar janelas de tempo em ts
+nilofcast_window$x <- window(nilofcast$x, 1180, 1289)
+hchart(nilofcast_window, name="NOAA", type="line") %>%
+  hc_colors(plotly_palette[c(6,1,4,3,5)]) %>%
+  hc_title(text = "Série Histórica Anual - Nível Rio Nilo - Previsão 5 Anos (zoom 1180 - 1289)",
+           margin = 20, align = "center",
+           style = list(color = "black", useHTML = TRUE))
+# plot(echofcast)
+```
+
+---
+
+---
+
+#### **Referências Bibliográficas**
+
+---
+
+AGUADO, E. *Time Series Analysis of Nile Flows*. Annals of the Association of the American Geographers 72: 109-19.
+
+MORETTIN, P.A. & TOLOI, C.M.  *Análise de Séries Temporais*. 2a ed., Edgard Blücher, 2005.
+
+NOTAS DE AULA. *Análise de Séries Temporais*. Curso de Graduação em Estatística, UnB, 2018.
+
+R CORE TEAM. *R: A language and environment for statistical computing*. R Foundation for Statistical Computing, Vienna, Austria. URL https://www.R-project.org/.
+
+SHUMWAY, R.H. & STOFFER, D.S. *Time Series Analysis and Its Applications with R Examples*. Springer, 2011.
+
+---
+
+---
+
