@@ -38,12 +38,12 @@ Nos links abaixo você encontrará exemplos com aplicações dos conceitos traba
 
 - [**Exercícios**](https://allanvc.github.io/time_series/other_exe/){target="_blank"}
 
-- [**Prova 1**](https://allanvc.github.io/time_series/PP1/Prova_1-2018-Pratica.pdf){target="_blank"}/[**Resolução**](https://allanvc.github.io/time_series/PP1/relatorio_executivo/){target="_blank"}
+- [**Prova 1**](https://allanvc.github.io/time_series/PP1/Prova_1-2018-Pratica.pdf){target="_blank"} | [**Resolução**](https://allanvc.github.io/time_series/PP1/relatorio_executivo/){target="_blank"}
 
 
 ---
 
 #### **Modelos SARIMA e grid de seleção**
 
-- [**Prova 2**](https://allanvc.github.io/time_series/PP2/Prova_2-2018.pdf){target="_blank"}/[**Resolução**](https://allanvc.github.io/time_series/PP2/v2/){target="_blank"}
+- [**Prova 2**](https://allanvc.github.io/time_series/PP2/Prova_2-2018.pdf){target="_blank"} | [**Resolução**](https://allanvc.github.io/time_series/PP2/v2/){target="_blank"}
 
